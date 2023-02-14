@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Kea Water</title>
+    <link rel="stylesheet" href="index.css">
+    <script src="apexcharts.min.js"></script>
+</head>
+<script>
+    function select(element) {
+        document.querySelectorAll('.selected').forEach(e => { e.classList.remove('selected') })
+        element.querySelector('.activeIndicator').classList.add('selected')
+    }
+</script>
+
+<body>
+    <div class="page">
+        <div class="sideBar">
+            <a href="#temperature">
+                <div class="item" onclick="select(this)">
+                    <div class="activeIndicator selected">
+                        <img class="icon" src="temperature.svg">
+                    </div>
+                    <div class="label">Temperature</div>
+                </div>
+            </a>
+            <a href="#tds">
+                <div class="item" onclick="select(this)">
+                    <div class="activeIndicator">
+                        <img class="icon" src="tds.svg">
+                    </div>
+                    <div class="label">TDS</div>
+                </div>
+            </a>
+            <a href="#turbidity">
+                <div class="item" onclick="select(this)">
+                    <div class="activeIndicator">
+                        <img class="icon" src="turbidity.svg">
+                    </div>
+                    <div class="label">Turbidity</div>
+                </div>
+            </a>
+            <a href="#pH">
+                <div class="item" onclick="select(this)">
+                    <div class="activeIndicator">
+                        <img class="icon" src="pH.svg">
+                    </div>
+                    <div class="label">pH</div>
+                </div>
+            </a>
+            <a href="#download">
+                <div class="item" onclick="select(this)">
+                    <div class="activeIndicator">
+                        <img class="icon" src="download.svg">
+                    </div>
+                    <div class="label">Download</div>
+                </div>
+            </a>
+        </div>
+        <div class="content">
+            <!-- <div class="card" id="temperature">
+                <div class="chart" id="chart1"></div>
+                <div class="cardContent">
+                    <h1>Temperature</h1>
+                    <p>Measured in degrees celcius, this Sensor uses a K type thermocouple operating at 3.3v</p>
+                    <a href="calibrate">
+                        <div class="cardButton">Calibrate</div>
+                    </a>
+                </div>
+            </div> -->
+            <div class="card" id="temperature">
+                <div class="chart" id="chartTemperature"></div>
+                <div class="cardContent">
+                    <h1>Temperature</h1>
+                    <p>Measured in degrees celcius, this Sensor uses a thermistor operating at 3.3v</p>
+                </div>
+            </div>
+            <div class="card" id="tds">
+                <div class="chart" id="chartTds"></div>
+                <div class="cardContent">
+                    <h1>Total Disolved Solids</h1>
+                    <p>Measured as the conductivity of the water, this is converted to parts per million (ppm) of disolved solids in the water using the standard 442 TDS solution.</p>
+                </div>
+            </div>
+            <div class="card" id="turbidity">
+                <div class="chart" id="chartTurbidity"></div>
+                <div class="cardContent">
+                    <h1>Turbidity</h1>
+                    <p>Coming Soon...</p>
+                </div>
+            </div>
+            <div class="card" id="pH">
+                <div class="chart" id="chart_pH"></div>
+                <div class="cardContent">
+                    <h1>pH</h1>
+                    <p>Measured on The pH scale using a pH probe. Make sure to calibrate the sensor once every 12 months at least and replace the sensor every 3-5 years.</p>
+                </div>
+            </div>
+            <div class="card" id="download">
+                <div class="cardContent">
+                    <h1>Download</h1>
+                    <p>You can download a copy of the data as a csv file.</p>
+                    <a href="Water_Quality_Data.csv">
+                        <div class="cardButton">View Data</div>
+                    </a>
+                    <a href="Water_Quality_Data.csv" download="Water_Quality_Data.csv">
+                        <div class="cardButton">Download Data</div>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+
+<script>
+    var numberOfDataSeries = 6
+    var defaultChartOptions = {
+        series: [{
+            name: "Default Series Name",
+            data: []
+        }],
+        chart: {
+            type: 'line',
+            height: 350,
+            background: '#004880',
+            animations: {
+                easing: 'easein',
+            },
+            fontFamily: 'Lato, sans-serif',
+            foreColor: '#d3e4ff',
+            zoom: {
+                enabled: true,
+                autoScaleYaxis: false,
+                zoomedArea: {
+                    fill: {
+                        color: '#90CAF9',
+                        opacity: 0.4
+                    },
+                    stroke: {
+                        color: '#0D47A1',
+                        opacity: 0.4,
+                        width: 1
+                    }
+                }
+            },
+            toolbar: {
+                show: true,
+                tools: {
+                    download: '<img class="icon" src="download.svg" width="50">',
+                    selection: false,
+                    zoom: '<img class="icon" src="select.svg" width="50">',
+                    zoomin: '<img class="icon" src="zoom_in.svg" width="50">',
+                    zoomout: '<img class="icon" src="zoom_out.svg" width="50">',
+                    pan: false,
+                    reset: '<img class="icon" src="zoom_out_map.svg" width="50">',
+                }
+            },
+        },
+        color: '#d3e4ff',
+        dataLabels: {
+            enabled: true,
+            style: {
+                fontSize: '14px',
+                fontFamily: 'Lato, sans-serif',
+                fontWeight: 'bold',
+            },
+            background: {
+                enabled: true,
+                foreColor: '#004880',
+                padding: 8,
+                borderRadius: 12,
+                borderWidth: 0,
+                opacity: 1,
+            },
+        },
+        stroke: {
+            curve: 'smooth'
+        },
+        grid: {
+            show: false,
+        },
+        markers: {
+            size: 0,
+            hover: {
+                size: 0,
+            }
+        },
+        xaxis: {
+            axisTicks: {
+                color: '#d3e4ff',
+            },
+            axisBorder: {
+                show: true,
+            },
+            labels: {
+                style: {
+                    fontSize: '12px',
+                    fontWeight: 300,
+                },
+            },
+        },
+        yaxis: {
+            title: {
+                style: {
+                    fontSize: '12px',
+                    fontWeight: 300,
+                },
+            },
+            axisTicks: {
+                color: '#d3e4ff',
+                show: true,
+            },
+            axisBorder: {
+                show: true,
+            },
+            labels: {
+                style: {
+                    colors: '#d3e4ff',
+                    fontSize: '12px',
+                    fontFamily: 'Lato, sans-serif',
+                    fontWeight: 300,
+                },
+            },
+        },
+    };
+
+    var temperatureOptions = Object.assign({}, JSON.parse(JSON.stringify(defaultChartOptions))) // clone the defaults, then overload the specifics
+    temperatureOptions.series[0].name = "Temperature"
+    temperatureOptions.yaxis.title.text = 'Temperature (\xB0C)'
+    // temperatureOptions.chart.background = '#0048ff'
+    // temperatureOptions.chart.foreColor = '#d3e400'
+    // temperatureOptions.color = '#d3e400'
+
+    var tdsOptions = Object.assign({}, JSON.parse(JSON.stringify(defaultChartOptions))) // clone the defaults, then overload the specifics
+    tdsOptions.series[0].name = "TDS"
+    tdsOptions.yaxis.title.text = 'Total Disolved Solids (PPM)'
+
+    var phOptions = Object.assign({}, JSON.parse(JSON.stringify(defaultChartOptions))) // clone the defaults, then overload the specifics
+    phOptions.series[0].name = "pH"
+    phOptions.yaxis.title.text = 'pH Level (0-14)'
+
+    var chartTemperature = new ApexCharts(document.querySelector("#chartTemperature"), temperatureOptions);
+    var chartTds = new ApexCharts(document.querySelector("#chartTds"), tdsOptions);
+    // var chartTurbidity = new ApexCharts(document.querySelector("#chartTurbidity"), apexChartOptions);
+    var chart_pH = new ApexCharts(document.querySelector("#chart_pH"), phOptions);
+
+    window.onload = getData
+
+    function getData() {
+        var xhttp = new XMLHttpRequest();
+        xhttp.onreadystatechange = function () {
+            if (this.readyState == 4 && this.status == 200) {
+                var prevDate = ''
+                var lines = this.responseText.split("\n");
+                lines && lines.forEach((line, lineNumber) => {
+                    line = line.replace(/,\s*$/, "") // remove any trailing comma and white space
+                    var rowValues = line.split(",")
+                    if (rowValues.length != (numberOfDataSeries + 2)) { // skip incomplete lines
+                        console.log(`Line #${lineNumber} has ${rowValues.length} values, but we were expecting ${numberOfDataSeries + 2}\nLine: ${line}`)
+                    } else {
+                        if (lineNumber == 0) { // ignore header row values, but push null values
+                            temperatureOptions.series[0].data.push({ x: ` `, y: null })
+                            tdsOptions.series[0].data.push({ x: ` `, y: null })
+                            phOptions.series[0].data.push({ x: ` `, y: null })
+                        } else {
+                            rowValues = rowValues.map(val => val.replace('\r', '')) // clean up \r from any values
+                            var dateStr = (rowValues[0] != prevDate) ? rowValues[0] + ' ' : ''
+                            prevDate = rowValues[0]
+
+                            temperatureOptions.series[0].data.push({ x: `${dateStr}${rowValues[1]}`, y: rowValues[5] })
+                            tdsOptions.series[0].data.push({ x: `${dateStr}${rowValues[1]}`, y: rowValues[6] })
+                            phOptions.series[0].data.push({ x: `${dateStr}${rowValues[1]}`, y: rowValues[7] })
+                        }
+                    }
+                })
+                // push null value at end (x is a non-breaking space)
+                temperatureOptions.series[0].data.push({ x: '\xa0', y: null })
+                tdsOptions.series[0].data.push({ x: '\xa0', y: null })
+                phOptions.series[0].data.push({ x: '\xa0', y: null })
+
+                chartTemperature.render()
+                chartTds.render()
+                chart_pH.render()
+            }
+        };
+        xhttp.open("GET", "Water_Quality_Data.csv", true);
+        xhttp.send();
+    }
+
+</script>
+
+</html>

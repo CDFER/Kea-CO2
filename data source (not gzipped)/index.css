@@ -1,0 +1,119 @@
+body {
+    margin: 0;
+    background-color: #111;
+    font-family: "Lato", sans-serif;
+}
+
+div.debug { /* remove debug to enable */
+    border-width: 1px;
+    border-color: #818181;
+    border-style: dotted;
+}
+
+.page {
+    display: flex;
+}
+
+.content {
+    overflow: auto;
+    height: 100vh;
+    width: 100vw;
+    padding: 20px;
+}
+
+.chart {
+    border-radius: 12px;
+    background: #004880;
+    padding: 12px; 
+}
+
+.card {
+    border-radius: 12px;
+    background: #252728;
+    padding: 0px;
+    margin-bottom: 24px;
+}
+
+.cardContent {
+    padding: 16px; 
+}
+
+h1  {
+    color:#e3e2e6;
+    margin-top: 6px;
+    margin-bottom: 6px;
+    font-family: "Lato", sans-serif;
+    font-weight: 100;
+}
+
+p  {
+    color:#c3c6cf;
+    font-family: "Lato", sans-serif;
+    font-size: 14px;
+    font-weight: 300;
+    margin-top: 0px;
+    margin-bottom: 0px;
+}
+
+.cardButton {
+    text-decoration: none;
+    width: fit-content;
+    border-radius: 24px;
+    background: #00325b;
+    margin-top: 24px;
+    padding: 12px 24px 12px 24px;
+    font-weight: 100;
+    font-size: 16px;
+    color:#e3e2e6;
+    text-align: center;
+}
+
+.content>p {
+    color: beige;
+}
+
+.activeIndicator {
+    display: flex;
+    height: 32px;
+    width: 56px;
+    border-radius: 16px;
+    margin: 0px 12px 4px 12px;
+}
+
+.icon {
+    height: 24px;
+    width: 24px;
+    margin-left: auto;
+    margin-right: auto;
+    padding: 4px;
+}
+
+.sideBar {
+    display: flex;
+    flex-direction: column;
+    width: 80px;
+    justify-content: center;
+}
+
+.sideBar>a {
+    text-decoration: none;
+    padding-bottom: 12px;
+}
+
+a {
+    text-decoration: none;
+}
+
+.sideBar>a>.item>.label {
+    font-weight: 300;
+    font-size: 12px;
+    color: #818181;
+    text-align: center;
+}
+
+.sideBar>a>.item:hover .activeIndicator,
+.selected {
+    background-color: #28242f;
+}
+
+
