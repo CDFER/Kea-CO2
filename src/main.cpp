@@ -12,8 +12,7 @@
 #include <SPIFFS.h>
 
 // Adressable LEDs
-#include <NeoPixelAnimator.h>
-#include <NeoPixelBus.h>
+#include <NeoPixelBusLg.h>	// instead of NeoPixelBus.h (has Luminace and Gamma as default)
 
 //I2C (CO2 & LUX)
 #include <Wire.h>
@@ -24,22 +23,16 @@
 //SCD40/41 (CO2)
 #include <SensirionI2CScd4x.h>
 
-// -----------------------------------------
-//
-//    Main Settings
-//
-// -----------------------------------------
-const char *ssid = "captive";  // FYI The SSID can't have a space in it.
-const char *password = "12345678";
-char LogFilename[] = "/Air_Quality_Data.csv";
-#define RECORDING_TIME 10000  // time to record in milliseconds
-
 
 // -----------------------------------------
 //
 //    Access Point Settings
 //
 // -----------------------------------------
+const char *ssid = "captive";  // FYI The SSID can't have a space in it.
+const char *password = "12345678";
+char LogFilename[] = "/Air_Quality_Data.csv";
+
 const IPAddress localIP(4, 3, 2, 1);					// the IP address the webserver, Samsung requires the IP to be in public space
 const IPAddress gatewayIP(4, 3, 2, 1);					// IP address of the network
 const String localIPURL = "http://4.3.2.1/index.html";	// URL to the webserver
@@ -47,162 +40,110 @@ const String localIPURL = "http://4.3.2.1/index.html";	// URL to the webserver
 
 // -----------------------------------------
 //
-//    State Machines
-//
-// -----------------------------------------
-enum deviceStates { STARTUP_DEVICE,
-					FIND_GPS,
-					PRE_IDLE,
-					IDLE,
-					PRE_RECORDING,
-					RECORDING,
-					POST_RECORDING,
-					CHARGING };
-deviceStates state = STARTUP_DEVICE;
-
-enum LEDStates { STARTUP_LEDS,
-				 FADE_TO_OFF,
-				 LED_ANIMATION_UPDATE,
-				 STARTUP_FADE_IN,
-				 FADE_IN_OUT,
-				 LED_OFF,
-				 LED_IDLE,
-				 CO2_SCALE };
-LEDStates stripState = STARTUP_LEDS;
-
-// -----------------------------------------
-//
 //    Global Variables
 //
 // -----------------------------------------
-SensirionI2CScd4x scd4x;
-float lux;
-uint16_t co2 = 0;
-
-// -----------------------------------------
-//
-//    ARGB Global Variables
-//
-// -----------------------------------------
-const uint16_t PixelCount = 9;	  // make sure to set this to the number of pixels in your strip
-const uint8_t PixelPin = 2;		  // make sure to set this to the correct pin
-const uint8_t AnimationChannels = 1;  // we only need one as all the pixels are animated at once
-
-RgbColor targetColor = RgbColor(0);
-RgbColor prevtargetColor = RgbColor(0);
-
-NeoGamma<NeoGammaTableMethod> colorGamma;  // for any fade animations it is best to correct gamma (this method uses a table of values to reduce cpu cycles)
-
-NeoPixelBus<NeoGrbFeature, NeoWs2812xMethod> strip(PixelCount, PixelPin);
-
-NeoPixelAnimator animations(AnimationChannels, NEO_MILLISECONDS);
-// NEO_MILLISECONDS        1    // ~65 seconds max duration, ms updates
-// NEO_CENTISECONDS       10    // ~10.9 minutes max duration, 10ms updates
-// NEO_DECISECONDS       100    // ~1.8 hours max duration, 100ms updates
-
-// what is stored for state is specific to the need, in this case, the colors.
-// basically what ever you need inside the animation update function
-struct MyAnimationState {
-	RgbColor StartingColor;
-	RgbColor EndingColor;
-};
-
-MyAnimationState animationState[AnimationChannels];
+uint16_t lux = 0;
+uint16_t co2 = 450;
 
 
-void ARGBLEDs(void *parameter) {
-	const uint8_t FrameTime = 30;  // Milliseconds between frames 30ms = ~33.3fps
-
-	const RgbColor fadeInColour = HslColor(random(360) / 360.0f, 1.0f, 0.5f);
-
-	uint8_t brightness;
-
-	LEDStates nextState = STARTUP_FADE_IN;
-	stripState = STARTUP_LEDS;
-
-	HslColor startColor;
-	HslColor stopColor;
-
-	srand(esp_random());
-
-	void DrawPixels(bool corrected, HslColor startColor, HslColor stopColor);
 
 
-	while (true) {
-		switch (stripState) {
-			case STARTUP_LEDS:
-				strip.Begin();
-				strip.Show();
-				ESP_LOGV("LED Strip", "STARTED");
-				stripState = CO2_SCALE;
-				break;
-
-			case STARTUP_FADE_IN:
-				animationState[0].StartingColor = RgbColor(0);	// black
-				animationState[0].EndingColor = fadeInColour;
-				//animations.StartAnimation(0, 500, BlendAnimUpdate);
-
-				stripState = LED_ANIMATION_UPDATE;
-				nextState = FADE_TO_OFF;
-				break;
-
-			case FADE_TO_OFF:
-				animationState[0].StartingColor = strip.GetPixelColor(0);
-				animationState[0].EndingColor = RgbColor(0);  // black
-				//animations.StartAnimation(0, 500, BlendAnimUpdate);
-				stripState = LED_ANIMATION_UPDATE;
-				nextState = LED_OFF;
-				break;
-
-			case CO2_SCALE:
-
-				startColor = HslColor(0.25f, 1.0f, 0.1f);
-				stopColor = HslColor(0.0f, 1.0f, 0.1f);
-				DrawPixels(true, startColor, stopColor);
-				vTaskDelay(1000 / portTICK_PERIOD_MS);	 // vTaskDelay wants ticks, not milliseconds
-
-				break;
-
-			case LED_ANIMATION_UPDATE:
-				if (animations.IsAnimating()) {
-					animations.UpdateAnimations();
-					strip.Show();
-					vTaskDelay(FrameTime / portTICK_PERIOD_MS);	 // vTaskDelay wants ticks, not milliseconds
-				} else {
-					stripState = nextState;
-				}
-				break;
-
-			default:
-				ESP_LOGE("LED Strip", "hit default -> stripState = STARTUP_LEDS");
-				stripState = STARTUP_LEDS;
-				break;
-		}
-	}
+float mapCO2toHue(uint16_t x, uint16_t in_min, uint16_t in_max, float out_min, float out_max) {
+	return (float)(x - in_min) * (out_max - out_min) / (float)(in_max - in_min) + out_min;
 }
 
-void DrawPixels(bool corrected, HslColor startColor, HslColor stopColor) {
-	uint8_t fullPixels = strip.PixelCount() * ((co2-500) /1500.0f);
-	//Serial.println(fullPixels);
+void ARGBLEDs(void *parameter) {
+	const uint8_t pixelCount = 9;
+	const uint8_t pixelPin = 2;
+	const uint8_t FrameTime = 30;  // Milliseconds between frames 30ms = ~33.3fps max
+	NeoPixelBusLg<NeoGrbFeature, NeoWs2812xMethod> strip(pixelCount, pixelPin); //uses i2s silicon remaped to any pin to drive led data 
 
-	strip.ClearTo(0);
+	const uint16_t co2Max = 2000;	// ppm
+	const float co2MaxHue = 0.0;	 // red
+	const uint16_t co2min = 450;  // ppm
+	const float co2MinHue = 0.3;  // green
 
-	// for (uint8_t index = 0; index < strip.PixelCount(); index++) {
-	// 	float progress = index / static_cast<float>(strip.PixelCount() - 1);
-	// 	RgbColor color = HslColor::LinearBlend<NeoHueBlendCounterClockwiseDirection>(startColor, stopColor, progress);
+\
+	const RgbColor blackColor = RgbColor(0);
+	const RgbColor flashColor = RgbColor(255, 0, 0);
+	const uint8_t ppmPerPixel = (co2Max - co2min) / pixelCount;
 
-	// 	color = colorGamma.Correct(color);
-	// 	strip.SetPixelColor(index, color);
-	// }
-	for (uint8_t index = 0; index < fullPixels; index++) {
-	float progress = index / static_cast<float>(strip.PixelCount() - 1);
-	RgbColor color = HslColor::LinearBlend<NeoHueBlendCounterClockwiseDirection>(startColor, stopColor, progress);
+	uint16_t ppmDrawn = 0;
+	float hue = co2MinHue;
+	float lastL = 1.0; //Luminance of last led in scale
+	uint8_t brightness = 255; //
+	uint16_t ledCO2 = co2min;  // internal co2 which has been smoothed
 
-	color = colorGamma.Correct(color);
-	strip.SetPixelColor(index, color);
+	strip.Begin();
+	strip.SetLuminance(255);  // (0-255) - initially at full brightness
+	strip.Show();
+	ESP_LOGV("LED Strip", "STARTED");
+
+	for (uint8_t i = 0; i < 255; i++) {
+		strip.ClearTo(RgbColor(0,i,0));
+		strip.Show();
+		vTaskDelay((4500 / 255 / 2) / portTICK_PERIOD_MS);	 // vTaskDelay wants ticks, not milliseconds
 	}
 
-	strip.Show();
+	for (uint8_t i = 255; i > 0; i--) {
+		strip.ClearTo(RgbColor(0, i, 0));
+		strip.Show();
+		vTaskDelay((4500 / 255 / 2) / portTICK_PERIOD_MS);	// vTaskDelay wants ticks, not milliseconds
+	}
+
+	while (true) {
+
+		//Smooth CO2
+		if (co2 != 0) {
+			ledCO2 = ((ledCO2 * 49) + co2) / 50;
+		}
+
+		//Convert Lux to Brightness and smooth
+		if (lux < (255 * 2)) {
+			brightness = ((brightness * 49) + (lux / 2)) / 50;
+		} else {
+			brightness = ((brightness * 49) + (255)) / 50;
+		}
+
+		if (ledCO2 < co2Max) {
+			strip.SetLuminance(brightness); //Luminance is a gamma corrected Brightness
+			hue = mapCO2toHue(ledCO2, co2min, co2Max, co2MinHue, co2MaxHue);//map hue from co2 level
+			
+			//Find Which Pixels are filled with base color, inbetween and not lit
+			ppmDrawn = co2min;//ppmDrawn is a counter for how many ppm have been displayed by the previous pixels
+			uint8_t currentPixel = 0;
+			while (ppmDrawn <= (ledCO2 - ppmPerPixel)) {
+				ppmDrawn += ppmPerPixel;
+				currentPixel++;
+			}
+
+			strip.ClearTo(HsbColor(hue, 1.0f, 1.0f), 0, currentPixel - 1);	// apply base color to fully on pixels
+
+			lastL = float((ledCO2 - ppmDrawn) / ppmPerPixel);
+			strip.SetPixelColor(currentPixel, HsbColor(hue, 1.0f, lastL));//apply the inbetween color mix for the inbetween pixel
+
+			strip.ClearTo(blackColor, currentPixel + 1, pixelCount);  // apply black to the last few leds
+
+			strip.Show();// push led data to buffer
+			vTaskDelay(FrameTime / portTICK_PERIOD_MS);// time between frames
+
+		} else {  // co2 too high flash on off
+
+			brightness = 255;
+			strip.SetLuminance(brightness);
+
+			while (co2 > co2Max) {
+				strip.ClearTo(flashColor);
+				strip.Show();
+				vTaskDelay(1000 / portTICK_PERIOD_MS);	// vTaskDelay wants ticks, not milliseconds
+				strip.ClearTo(blackColor);
+				strip.Show();
+				vTaskDelay(1000 / portTICK_PERIOD_MS);	// vTaskDelay wants ticks, not milliseconds
+			}
+			ledCO2 = co2;//ledCo2 will have not been updated
+		}
+	}
 }
 
 void accessPoint(void *parameter) {
@@ -287,141 +228,80 @@ void accessPoint(void *parameter) {
 	}
 }
 
-/*void I2CScan(void *parameter) {
-	Wire.begin();
-	vTaskDelay(3000 / portTICK_PERIOD_MS);	// allow time for boot
-
-	byte error, address;
-	int nDevices;
-	Serial.println("Scanning..."); //ESP32 starts scanning available I2C devices
-	nDevices = 0;
-	for (address = 1; address < 127; address++) { //for loop to check number of devices on 127 address
-		Wire.beginTransmission(address);
-		error = Wire.endTransmission();
-		if (error == 0) {									//if I2C device found
-			Serial.print("I2C device found at address 0x"); //print this line if I2C device found
-			if (address < 16) {
-				Serial.print("0");
-			}
-			Serial.println(address, HEX); //prints the HEX value of I2C address
-			nDevices++;
-		} else if (error == 4) {
-			Serial.print("Unknown error at address 0x");
-			if (address < 16) {
-				Serial.print("0");
-			}
-			Serial.println(address, HEX);
-		}
-	}
-	if (nDevices == 0) {
-		Serial.println("No I2C devices found\n"); ///If no I2C device attached print this message
-	} else {
-		Serial.println("done\n");
-	}
-	vTaskDelete(NULL);
-}*/
-
 void LightSensor(void *parameter) {
 	DFRobot_VEML7700 als;
-	vTaskDelay(3000 / portTICK_PERIOD_MS);	// allow time for boot
+	float rawLux;
+	uint8_t error = 0;
+	vTaskDelay(1000 / portTICK_PERIOD_MS);	// allow time for boot and wire begin
 
-	als.begin();
+	als.begin(); //comment out wire.begin() in this function
 
 	while (true){
-		als.getAutoALSLux(lux);	 // Get the measured ambient light value
-		vTaskDelay(100 / portTICK_PERIOD_MS);	// allow time for boot
+		error = als.getAutoWhiteLux(rawLux);  // Get the measured ambient light value
+
+		if (error) {
+			ESP_LOGW("VEML7700", "getAutoWhiteLux(): STATUS_ERROR");
+		}else if (rawLux <65000){//overflow protection for 16bit int
+			lux = int(rawLux);
+		}else{
+			lux = 65000;
+		}
+
+		vTaskDelay(500 / portTICK_PERIOD_MS);
 	}
-	vTaskDelete(NULL);
-}
-
-void printUint16Hex(uint16_t value) {
-	Serial.print(value < 4096 ? "0" : "");
-	Serial.print(value < 256 ? "0" : "");
-	Serial.print(value < 16 ? "0" : "");
-	Serial.print(value, HEX);
-}
-
-void printSerialNumber(uint16_t serial0, uint16_t serial1, uint16_t serial2) {
-	Serial.print("SCD4x Serial Number: 0x");
-	printUint16Hex(serial0);
-	printUint16Hex(serial1);
-	printUint16Hex(serial2);
-	Serial.println();
 }
 
 void CO2Sensor(void *parameter) {
-	//vTaskDelay(1000 / portTICK_PERIOD_MS);	// vTaskDelay wants ticks, not milliseconds
+	SensirionI2CScd4x scd4x;
+
 	Wire.begin();
 
 	uint16_t error;
+	uint16_t co2Raw = 0;
+	float temperature = 0.0f;
+	float humidity = 0.0f;
 	char errorMessage[256];
+	bool isDataReady = false;
 
 	scd4x.begin(Wire);
 
-	// stop potentially previously started measurement
-	error = scd4x.stopPeriodicMeasurement();
-	if (error) {
-		Serial.print("Error trying to execute stopPeriodicMeasurement(): ");
-		errorToString(error, errorMessage, 256);
-		Serial.println(errorMessage);
-	}
-
-	uint16_t serial0;
-	uint16_t serial1;
-	uint16_t serial2;
-	error = scd4x.getSerialNumber(serial0, serial1, serial2);
-	if (error) {
-		Serial.print("Error trying to execute getSerialNumber(): ");
-		errorToString(error, errorMessage, 256);
-		Serial.println(errorMessage);
-	} else {
-		printSerialNumber(serial0, serial1, serial2);
-	}
-
-	// Start Measurement
 	error = scd4x.startPeriodicMeasurement();
 	if (error) {
-		Serial.print("Error trying to execute startPeriodicMeasurement(): ");
 		errorToString(error, errorMessage, 256);
-		Serial.println(errorMessage);
+		ESP_LOGD("SCD4x", "startPeriodicMeasurement(): %s", errorMessage);
 	}
 
-	//Serial.println("Waiting for first measurement... (5 sec)");
 	Serial.print("\nCO2 (ppm),Temp (degC),Humidity (%RH)\n");
 
 	while (true) {
-		uint16_t error;
-		char errorMessage[256];
 
-		vTaskDelay(1000 / portTICK_PERIOD_MS);  // vTaskDelay wants ticks, not milliseconds
+		error = 0;
+		isDataReady = false;
+		do{
+			error = scd4x.getDataReadyFlag(isDataReady);
+			vTaskDelay(30 / portTICK_PERIOD_MS);	// about 5s between readings
+		} while (isDataReady == false);
 
-		// Read Measurement
-		
-		float temperature = 0.0f;
-		float humidity = 0.0f;
-		bool isDataReady = false;
-		error = scd4x.getDataReadyFlag(isDataReady);
-		//Serial.println(isDataReady);
+
 		if (error) {
-			Serial.print("Error trying to execute getDataReadyFlag(): ");
 			errorToString(error, errorMessage, 256);
-			Serial.println(errorMessage);
+			ESP_LOGW("SCD4x", "getDataReadyFlag(): %s", errorMessage);
 			
-		}else if (isDataReady) {
-			error = scd4x.readMeasurement(co2, temperature, humidity);
+		}else{
+			error = scd4x.readMeasurement(co2Raw, temperature, humidity);
 			if (error) {
-				Serial.print("Error trying to execute readMeasurement(): ");
 				errorToString(error, errorMessage, 256);
-				Serial.println(errorMessage);
-			} else if (co2 == 0) {
-				Serial.println("Invalid sample detected, skipping.");
+				ESP_LOGW("SCD4x", "readMeasurement(): %s", errorMessage);
+
+			} else if (co2Raw == 0) {
+				ESP_LOGW("SCD4x", "CO2 = 0ppm, skipping");
 			} else {
-				Serial.printf("%i,%.1f,%.1f\n",co2,temperature,humidity);
+				Serial.printf("%i,%.1f,%.1f\n", co2Raw, temperature, humidity);
+				co2 = co2Raw;
 			}
 		}
-		
+		vTaskDelay(4750 / portTICK_PERIOD_MS);  //about 5s between readings, don't waste cpu time
 	}
-	vTaskDelete(NULL);
 }
 
 void setup() {
@@ -439,52 +319,15 @@ void setup() {
 	} else {
 		ESP_LOGE("File System", "Can't mount SPIFFS");
 	}
+
+	// 			Function, Name (for debugging), Stack size, Params, Priority, Handle
+	// xTaskCreate(accessPoint, "accessPoint", 5000, NULL, 1, NULL);
+	xTaskCreatePinnedToCore(ARGBLEDs, "ARGBLEDs", 5000, NULL, 1, NULL, 1);
+	xTaskCreatePinnedToCore(LightSensor, "LightSensor", 5000, NULL, 1, NULL, 1);
+	xTaskCreatePinnedToCore(CO2Sensor, "CO2Sensor", 5000, NULL, 1, NULL, 1);
 }
 
 void loop() {
-	switch (state) {
-		case STARTUP_DEVICE:
-
-			// 			Function, Name (for debugging), Stack size, Params, Priority, Handle
-			//xTaskCreate(accessPoint, "accessPoint", 5000, NULL, 1, NULL);
-			xTaskCreate(ARGBLEDs, "ARGBLEDs", 5000, NULL, 1, NULL);
-			//xTaskCreate(I2CScan, "I2CScan", 5000, NULL, 1, NULL);
-			xTaskCreate(LightSensor, "LightSensor", 5000, NULL, 1, NULL);
-			xTaskCreatePinnedToCore(CO2Sensor, "CO2Sensor", 5000, NULL, 1, NULL,	1);
-
-			state = IDLE;
-			break;
-
-		case IDLE:
-			//ESP_LOGV("deviceState", "IDLE");
-			vTaskDelay(100 / portTICK_PERIOD_MS);
-			break;
-
-		case PRE_RECORDING:
-			ESP_LOGV("deviceState", "PRE_RECORDING");
-			state = RECORDING;
-			break;
-
-		case RECORDING:
-			ESP_LOGD("deviceState", "RECORDING");
-			vTaskDelay(RECORDING_TIME / portTICK_PERIOD_MS);
-			state = POST_RECORDING;
-			break;
-
-		case POST_RECORDING:
-			ESP_LOGV("deviceState", "POST_RECORDING");
-			// xTaskCreate(appendLineToCSV, "appendLineToCSV", 5000, NULL, 1, NULL);
-			state = IDLE;
-			break;
-
-		case CHARGING:
-			break;
-
-		default:
-			ESP_LOGE("Hit default Case in state machine", "Restarting...");
-			vTaskDelay(1000 / portTICK_PERIOD_MS);	// vTaskDelay wants ticks, not milliseconds
-			ESP.restart();
-			break;
-	}
-	vTaskDelay(1);	// Keep RTOS Happy with a 1 tick delay when there is nothing to do
+	vTaskSuspend(NULL);
+	//vTaskDelay(1);	// Keep RTOS Happy with a 1 tick delay when there is nothing to do
 }
