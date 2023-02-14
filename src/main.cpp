@@ -13,7 +13,7 @@
 
 // Adressable LEDs
 #include <NeoPixelAnimator.h>
-#include <NeoPixelBus.h>
+#include <NeoPixelBusLg.h>	// instead of NeoPixelBus.h
 
 //I2C (CO2 & LUX)
 #include <Wire.h>
@@ -77,69 +77,79 @@ LEDStates stripState = STARTUP_LEDS;
 // -----------------------------------------
 SensirionI2CScd4x scd4x;
 float lux;
-uint16_t co2 = 0;
+uint16_t co2 = 500;
 
 // -----------------------------------------
 //
 //    ARGB Global Variables
 //
 // -----------------------------------------
-const uint16_t PixelCount = 9;	  // make sure to set this to the number of pixels in your strip
+const uint8_t PixelCount = 9;	  // make sure to set this to the number of pixels in your strip
 const uint8_t PixelPin = 2;		  // make sure to set this to the correct pin
 const uint8_t AnimationChannels = 1;  // we only need one as all the pixels are animated at once
 
-RgbColor targetColor = RgbColor(0);
-RgbColor prevtargetColor = RgbColor(0);
 
-NeoGamma<NeoGammaTableMethod> colorGamma;  // for any fade animations it is best to correct gamma (this method uses a table of values to reduce cpu cycles)
+//NeoGamma<NeoGammaTableMethod> colorGamma;  // for any fade animations it is best to correct gamma (this method uses a table of values to reduce cpu cycles)
 
-NeoPixelBus<NeoGrbFeature, NeoWs2812xMethod> strip(PixelCount, PixelPin);
+NeoPixelBusLg<NeoGrbFeature, NeoWs2812xMethod> strip(PixelCount, PixelPin);
 
-NeoPixelAnimator animations(AnimationChannels, NEO_MILLISECONDS);
+//NeoPixelAnimator animations(AnimationChannels, NEO_MILLISECONDS);
 // NEO_MILLISECONDS        1    // ~65 seconds max duration, ms updates
 // NEO_CENTISECONDS       10    // ~10.9 minutes max duration, 10ms updates
 // NEO_DECISECONDS       100    // ~1.8 hours max duration, 100ms updates
 
 // what is stored for state is specific to the need, in this case, the colors.
 // basically what ever you need inside the animation update function
-struct MyAnimationState {
-	RgbColor StartingColor;
-	RgbColor EndingColor;
-};
+// struct MyAnimationState {
+// 	RgbColor StartingColor;
+// 	RgbColor EndingColor;
+// };
 
-MyAnimationState animationState[AnimationChannels];
+//MyAnimationState animationState[AnimationChannels];
 
+float maptofloat(uint16_t x, uint16_t in_min, uint16_t in_max, float out_min, float out_max) {
+	return (float)(x - in_min) * (out_max - out_min) / (float)(in_max - in_min) + out_min;
+}
 
 void ARGBLEDs(void *parameter) {
 	const uint8_t FrameTime = 30;  // Milliseconds between frames 30ms = ~33.3fps
+	static const uint8_t c_MinBrightness = 0;
+	static const uint8_t c_MaxBrightness = 255;
 
-	const RgbColor fadeInColour = HslColor(random(360) / 360.0f, 1.0f, 0.5f);
+	const uint16_t co2Max = 2000;	// ppm
+	const float co2MaxHue = 0.0;	 // red
+	const uint16_t co2min = 500;  // ppm
+	const float co2MinHue = 0.24;  // green
 
-	uint8_t brightness;
+	const uint8_t ppmPerPixel = (co2Max - co2min) / strip.PixelCount();
 
-	LEDStates nextState = STARTUP_FADE_IN;
-	stripState = STARTUP_LEDS;
+	RgbColor baseColor = HslColor(0, 0, 0);
+	uint16_t ppmDrawn = co2min;
+	float hue;
+	float lastL;
+	uint8_t Brightness = 0;
 
-	HslColor startColor;
-	HslColor stopColor;
+		LEDStates nextState = CO2_SCALE;
+	LEDStates stripState = STARTUP_LEDS;
 
 	srand(esp_random());
 
-	void DrawPixels(bool corrected, HslColor startColor, HslColor stopColor);
+	// void DrawPixels(bool corrected, HslColor startColor, HslColor stopColor);
 
 
 	while (true) {
 		switch (stripState) {
 			case STARTUP_LEDS:
 				strip.Begin();
+				strip.SetLuminance(255);  // (0-255) - initially at full brightness
 				strip.Show();
 				ESP_LOGV("LED Strip", "STARTED");
 				stripState = CO2_SCALE;
 				break;
 
 			case STARTUP_FADE_IN:
-				animationState[0].StartingColor = RgbColor(0);	// black
-				animationState[0].EndingColor = fadeInColour;
+				// animationState[0].StartingColor = RgbColor(0);	// black
+				// animationState[0].EndingColor = fadeInColour;
 				//animations.StartAnimation(0, 500, BlendAnimUpdate);
 
 				stripState = LED_ANIMATION_UPDATE;
@@ -147,8 +157,8 @@ void ARGBLEDs(void *parameter) {
 				break;
 
 			case FADE_TO_OFF:
-				animationState[0].StartingColor = strip.GetPixelColor(0);
-				animationState[0].EndingColor = RgbColor(0);  // black
+				// animationState[0].StartingColor = strip.GetPixelColor(0);
+				// animationState[0].EndingColor = RgbColor(0);  // black
 				//animations.StartAnimation(0, 500, BlendAnimUpdate);
 				stripState = LED_ANIMATION_UPDATE;
 				nextState = LED_OFF;
@@ -156,21 +166,48 @@ void ARGBLEDs(void *parameter) {
 
 			case CO2_SCALE:
 
-				startColor = HslColor(0.25f, 1.0f, 0.1f);
-				stopColor = HslColor(0.0f, 1.0f, 0.1f);
-				DrawPixels(true, startColor, stopColor);
-				vTaskDelay(1000 / portTICK_PERIOD_MS);	 // vTaskDelay wants ticks, not milliseconds
+				Brightness = map(lux, 0, 1000, 0, 255);
+
+				strip.SetLuminance(Brightness);	 // (0-255) - initially at full brightness
+
+				hue = maptofloat(co2, co2min, co2Max, co2MinHue, co2MaxHue);
+
+				baseColor = RgbColor(HsbColor(hue, 1.0f, 1.0f));
+				//float fullPixels = map(co2, co2min, co2Max, 0, strip.PixelCount());
+				ppmDrawn = co2min;
+
+				strip.ClearTo(RgbColor(0));
+
+				for (uint8_t currentPixel = 0; currentPixel < strip.PixelCount(); currentPixel++) {
+					if (ppmDrawn <= (co2 - ppmPerPixel)) {
+						// strip.SetPixelColor(currentPixel, baseColor);
+						ppmDrawn += ppmPerPixel;
+					}else{
+						strip.ClearTo(baseColor, 0, currentPixel-1);
+
+						lastL = float(co2 - ppmDrawn) / float(ppmPerPixel);
+						strip.SetPixelColor(currentPixel, HsbColor(hue, 1.0f, lastL));
+
+						strip.ClearTo(RgbColor(0), currentPixel + 1, strip.PixelCount());
+
+						currentPixel = strip.PixelCount();
+					}
+					
+				}
+
+				strip.Show();
+				vTaskDelay(FrameTime / portTICK_PERIOD_MS);	 // vTaskDelay wants ticks, not milliseconds
 
 				break;
 
 			case LED_ANIMATION_UPDATE:
-				if (animations.IsAnimating()) {
-					animations.UpdateAnimations();
-					strip.Show();
-					vTaskDelay(FrameTime / portTICK_PERIOD_MS);	 // vTaskDelay wants ticks, not milliseconds
-				} else {
-					stripState = nextState;
-				}
+				// if (animations.IsAnimating()) {
+				// 	animations.UpdateAnimations();
+				// 	strip.Show();
+				// 	vTaskDelay(FrameTime / portTICK_PERIOD_MS);	 // vTaskDelay wants ticks, not milliseconds
+				// } else {
+				// 	stripState = nextState;
+				// }
 				break;
 
 			default:
@@ -181,29 +218,38 @@ void ARGBLEDs(void *parameter) {
 	}
 }
 
-void DrawPixels(bool corrected, HslColor startColor, HslColor stopColor) {
-	uint8_t fullPixels = strip.PixelCount() * ((co2-500) /1500.0f);
-	//Serial.println(fullPixels);
+// void DrawScale(HslColor baseColor, uint8_t fullPixels, float lastPixel) {
+// 	uint8_t fullPixels = strip.PixelCount() * ((co2-500) /1500.0f);
+// 	//Serial.println(fullPixels);
 
-	strip.ClearTo(0);
+// 	strip.ClearTo(0);
 
-	// for (uint8_t index = 0; index < strip.PixelCount(); index++) {
-	// 	float progress = index / static_cast<float>(strip.PixelCount() - 1);
-	// 	RgbColor color = HslColor::LinearBlend<NeoHueBlendCounterClockwiseDirection>(startColor, stopColor, progress);
+// 	// for (uint8_t index = 0; index < strip.PixelCount(); index++) {
+// 	// 	float progress = index / static_cast<float>(strip.PixelCount() - 1);
+// 	// 	RgbColor color = HslColor::LinearBlend<NeoHueBlendCounterClockwiseDirection>(startColor, stopColor, progress);
 
-	// 	color = colorGamma.Correct(color);
-	// 	strip.SetPixelColor(index, color);
-	// }
-	for (uint8_t index = 0; index < fullPixels; index++) {
-	float progress = index / static_cast<float>(strip.PixelCount() - 1);
-	RgbColor color = HslColor::LinearBlend<NeoHueBlendCounterClockwiseDirection>(startColor, stopColor, progress);
+// 	// 	color = colorGamma.Correct(color);
+// 	// 	strip.SetPixelColor(index, color);
+// 	// }
+// 	for (uint8_t index = 0; index < fullPixels; index++) {
+// 	float progress = index / static_cast<float>(strip.PixelCount() - 1);
+// 	RgbColor color = HslColor::LinearBlend<NeoHueBlendCounterClockwiseDirection>(startColor, stopColor, progress);
 
-	color = colorGamma.Correct(color);
-	strip.SetPixelColor(index, color);
-	}
+// 	color = colorGamma.Correct(color);
+// 	strip.SetPixelColor(index, color);
+// 	}
 
-	strip.Show();
-}
+// 	strip.Show();
+// }
+
+// void FadeAll(uint8_t darkenBy) {
+// 	RgbColor color;
+// 	for (uint16_t indexPixel = 0; indexPixel < strip.PixelCount(); indexPixel++) {
+// 	color = strip.GetPixelColor(indexPixel);
+// 	color.Darken(darkenBy);
+// 	strip.SetPixelColor(indexPixel, color);
+// 	}
+// }
 
 void accessPoint(void *parameter) {
 #define DNS_INTERVAL 10	 // ms between processing dns requests: dnsServer.processNextRequest();
@@ -354,6 +400,9 @@ void CO2Sensor(void *parameter) {
 	Wire.begin();
 
 	uint16_t error;
+	uint16_t co2Raw = 0;
+	float temperature = 0.0f;
+	float humidity = 0.0f;
 	char errorMessage[256];
 
 	scd4x.begin(Wire);
@@ -387,18 +436,16 @@ void CO2Sensor(void *parameter) {
 	}
 
 	//Serial.println("Waiting for first measurement... (5 sec)");
-	Serial.print("\nCO2 (ppm),Temp (degC),Humidity (%RH)\n");
+	Serial.print("\nCO2 (ppm),Temp (degC),Humidity (%RH), Lux (Lumens)\n");
 
 	while (true) {
 		uint16_t error;
 		char errorMessage[256];
 
-		vTaskDelay(1000 / portTICK_PERIOD_MS);  // vTaskDelay wants ticks, not milliseconds
+		vTaskDelay(30 / portTICK_PERIOD_MS);  // vTaskDelay wants ticks, not milliseconds
 
 		// Read Measurement
 		
-		float temperature = 0.0f;
-		float humidity = 0.0f;
 		bool isDataReady = false;
 		error = scd4x.getDataReadyFlag(isDataReady);
 		//Serial.println(isDataReady);
@@ -408,17 +455,22 @@ void CO2Sensor(void *parameter) {
 			Serial.println(errorMessage);
 			
 		}else if (isDataReady) {
-			error = scd4x.readMeasurement(co2, temperature, humidity);
+			error = scd4x.readMeasurement(co2Raw, temperature, humidity);
 			if (error) {
 				Serial.print("Error trying to execute readMeasurement(): ");
 				errorToString(error, errorMessage, 256);
 				Serial.println(errorMessage);
-			} else if (co2 == 0) {
+			} else if (co2Raw == 0) {
 				Serial.println("Invalid sample detected, skipping.");
 			} else {
-				Serial.printf("%i,%.1f,%.1f\n",co2,temperature,humidity);
+				Serial.printf("%i,%.1f,%.1f,%.1f\n", co2Raw, temperature, humidity, lux);
 			}
 		}
+
+		if (co2Raw != 0){
+			co2 = ((co2 * 49) + co2Raw) / 50;
+		}
+		
 		
 	}
 	vTaskDelete(NULL);
