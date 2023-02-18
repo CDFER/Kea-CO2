@@ -74,9 +74,10 @@ void ARGBLEDs(void *parameter) {
 	float lastL = 1.0; //Luminance of last led in scale
 	uint8_t brightness = 255; //
 	uint16_t ledCO2 = co2min;  // internal co2 which has been smoothed
+	uint16_t rawbrightness = 0;	// ppm
 
 	strip.Begin();
-	strip.SetLuminance(255);  // (0-255) - initially at full brightness
+	strip.SetLuminance(brightness);	 // (0-255) - initially at full brightness
 	strip.Show();
 	ESP_LOGV("LED Strip", "STARTED");
 
@@ -100,14 +101,16 @@ void ARGBLEDs(void *parameter) {
 		}
 
 		//Convert Lux to Brightness and smooth
-		if (lux < (255 * 2)) {
-			brightness = ((brightness * 49) + (lux / 2)) / 50;
+		rawbrightness = sqrt(lux)*5;
+
+		if (rawbrightness < (255)) {
+			brightness = ((brightness * 49) + (rawbrightness)) / 50;
 		} else {
 			brightness = ((brightness * 49) + (255)) / 50;
 		}
 
 		if (ledCO2 < co2Max) {
-			strip.SetLuminance(brightness); //Luminance is a gamma corrected Brightness
+			strip.SetLuminance(brightness);									// Luminance is a gamma corrected Brightness
 			hue = mapCO2toHue(ledCO2, co2min, co2Max, co2MinHue, co2MaxHue);//map hue from co2 level
 			
 			//Find Which Pixels are filled with base color, inbetween and not lit
@@ -241,8 +244,8 @@ void LightSensor(void *parameter) {
 
 		if (error) {
 			ESP_LOGW("VEML7700", "getAutoWhiteLux(): STATUS_ERROR");
-		}else if (rawLux <65000){//overflow protection for 16bit int
-			lux = int(rawLux);
+		}else if (rawLux <(65000/10)){//overflow protection for 16bit int
+			lux = int(rawLux*10);
 		}else{
 			lux = 65000;
 		}
