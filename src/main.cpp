@@ -1,3 +1,25 @@
+/*
+	Licence under the HIPPOCRATIC LICENSE Version 3.0, October 2021
+
+	Open Source Air Quality (CO2) Sensor Firmware
+
+	ESP32 Wroom Module as MCU
+	Lights up a strip of WS2812B Addressable RGB LEDs to display a scale of the ambient CO2 level
+	CO2 data is from a Sensirion SCD40
+	The LEDs are adjusted depending on the ambient Light data from a VEML7700
+	There is also a webserver which displays graphs of CO2, Humidity and Temperature while also providing a csv download for that data
+
+	The circuit:
+	* i2c (IO21 -> SDA, IO22 ->SCL) -> SCD40 & VEML7700 (3.3V Power and Data)
+	* IO2 (3.3V) -> SN74LVC2T45 Level Shifter (5v) -> WS2812B (5v Power and Data)
+	* USB C power (5v Rail) -> XC6220B331MR-G -> 3.3V Rail
+
+
+	Created 14.02.2023
+
+	By @CD_FER (Chris Dirks)
+*/
+
 #include <Arduino.h>
 
 // Wifi, Webserver and DNS
@@ -11,7 +33,7 @@
 // Onboard Flash Storage
 #include <SPIFFS.h>
 
-// Adressable LEDs
+// Addressable LEDs
 #include <NeoPixelBusLg.h>	// instead of NeoPixelBus.h (has Luminace and Gamma as default)
 
 //I2C (CO2 & LUX)
@@ -23,19 +45,16 @@
 //SCD40/41 (CO2)
 #include <SensirionI2CScd4x.h>
 
+#define VERSION "V0.1.0-DEV"
+#define USER "CD_FER" //username to add to the startup serial output
 
-// -----------------------------------------
-//
-//    Access Point Settings
-//
-// -----------------------------------------
-const char *ssid = "captive";  // FYI The SSID can't have a space in it.
-const char *password = "12345678";
-char LogFilename[] = "/Air_Quality_Data.csv";
+const char *ssid = "Kea-CO2";	// Name of the Wifi Access Point, FYI The SSID can't have a space in it.
+const char *password = "";		// Password of the Wifi Access Point, leave blank for no Password
+char LogFilename[] = "/Kea-CO2-Data.csv";	//name of the file which has the data in it.
 
 const IPAddress localIP(4, 3, 2, 1);					// the IP address the webserver, Samsung requires the IP to be in public space
-const IPAddress gatewayIP(4, 3, 2, 1);					// IP address of the network
-const String localIPURL = "http://4.3.2.1/index.html";	// URL to the webserver
+const IPAddress gatewayIP(4, 3, 2, 1);					// IP address of the network (should be the same as the local IP in most cases)
+const String localIPURL = "http://4.3.2.1/index.html";	// URL to the webserver (Same as the local IP but as a string with http and the landing page subdomain)
 
 
 // -----------------------------------------
@@ -43,109 +62,129 @@ const String localIPURL = "http://4.3.2.1/index.html";	// URL to the webserver
 //    Global Variables
 //
 // -----------------------------------------
-uint16_t lux = 0;
+uint8_t lux = 255;
 uint16_t co2 = 450;
 
+/**
+ * This sets the scale of the co2 level and maps it to the hue of the LEDs
+*/
+#define CO2_MAX 2000 	//top of the CO2 Scale (also when it transitions to warning Flash)
+#define CO2_MAX_HUE 0.0	//top of the Scale (Red Hue) 
+#define CO2_MIN 450		//bottom of the Scale
+#define CO2_MIN_HUE 0.3	//bottom of the Scale (Green Hue)
+#define CO2_SMOOTHING_FACTOR 100  // helps to make it look like we have continuous data not a update every 5s
 
+#define LUX_SMOOTHING_FACTOR 10	 // helps to make it look like we have continuous data not a update every 5s
+#define MIN_USABLE_LUMINANCE 48  // min Luminance when led's actually turn on
 
+#define PIXEL_COUNT 9
+#define PIXEL_DATA_PIN 2
+#define FRAME_TIME 30  // Milliseconds between frames 30ms = ~33.3fps max
 
-float mapCO2toHue(uint16_t x, uint16_t in_min, uint16_t in_max, float out_min, float out_max) {
-	return (float)(x - in_min) * (out_max - out_min) / (float)(in_max - in_min) + out_min;
+#define OFF RgbColor(0)
+#define WARNING_COLOR RgbColor(HsbColor(CO2_MAX_HUE, 1.0f, 1.0f))
+
+#define PPM_PER_PIXEL ((CO2_MAX - CO2_MIN) / PIXEL_COUNT)
+
+float mapCO2ToHue(uint16_t ledCO2){
+	return (float)(ledCO2 - (uint16_t)CO2_MIN) * ((float)CO2_MAX_HUE - (float)CO2_MIN_HUE) / (float)((uint16_t)CO2_MAX - (uint16_t)CO2_MIN) + (float) CO2_MIN_HUE;
 }
 
-void ARGBLEDs(void *parameter) {
-	const uint8_t pixelCount = 9;
-	const uint8_t pixelPin = 2;
-	const uint8_t FrameTime = 30;  // Milliseconds between frames 30ms = ~33.3fps max
-	NeoPixelBusLg<NeoGrbFeature, NeoWs2812xMethod> strip(pixelCount, pixelPin); //uses i2s silicon remaped to any pin to drive led data 
+void AddressableRGBLeds(void *parameter) {
 
-	const uint16_t co2Max = 2000;	// ppm
-	const float co2MaxHue = 0.0;	 // red
-	const uint16_t co2min = 450;  // ppm
-	const float co2MinHue = 0.3;  // green
-
-\
-	const RgbColor blackColor = RgbColor(0);
-	const RgbColor flashColor = RgbColor(255, 0, 0);
-	const uint8_t ppmPerPixel = (co2Max - co2min) / pixelCount;
+	NeoPixelBusLg<NeoGrbFeature, NeoWs2812xMethod> strip(PIXEL_COUNT, PIXEL_DATA_PIN); //uses i2s silicon remapped to any pin to drive led data
 
 	uint16_t ppmDrawn = 0;
-	float hue = co2MinHue;
-	float lastL = 1.0; //Luminance of last led in scale
-	uint8_t brightness = 255; //
-	uint16_t ledCO2 = co2min;  // internal co2 which has been smoothed
-	uint16_t rawbrightness = 0;	// ppm
+	float hue = CO2_MIN_HUE;
+	uint8_t brightness = 255;
+	uint16_t ledCO2 = CO2_MIN;  // internal co2 which has been smoothed
+	uint8_t ledLux = 255;
+	bool updateLeds = true;
 
 	strip.Begin();
-	strip.SetLuminance(brightness);	 // (0-255) - initially at full brightness
 	strip.Show();
 	ESP_LOGV("LED Strip", "STARTED");
 
+	//Startup Fade IN OUT Green
 	for (uint8_t i = 0; i < 255; i++) {
 		strip.ClearTo(RgbColor(0,i,0));
 		strip.Show();
 		vTaskDelay((4500 / 255 / 2) / portTICK_PERIOD_MS);	 // vTaskDelay wants ticks, not milliseconds
 	}
-
 	for (uint8_t i = 255; i > 0; i--) {
 		strip.ClearTo(RgbColor(0, i, 0));
 		strip.Show();
 		vTaskDelay((4500 / 255 / 2) / portTICK_PERIOD_MS);	// vTaskDelay wants ticks, not milliseconds
 	}
 
+
 	while (true) {
-
-		//Smooth CO2
-		if (co2 != 0) {
-			ledCO2 = ((ledCO2 * 49) + co2) / 50;
-		}
-
-		//Convert Lux to Brightness and smooth
-		rawbrightness = sqrt(lux)*5;
-
-		if (rawbrightness < (255)) {
-			brightness = ((brightness * 49) + (rawbrightness)) / 50;
-		} else {
-			brightness = ((brightness * 49) + (255)) / 50;
-		}
-
-		if (ledCO2 < co2Max) {
-			strip.SetLuminance(brightness);									// Luminance is a gamma corrected Brightness
-			hue = mapCO2toHue(ledCO2, co2min, co2Max, co2MinHue, co2MaxHue);//map hue from co2 level
-			
-			//Find Which Pixels are filled with base color, inbetween and not lit
-			ppmDrawn = co2min;//ppmDrawn is a counter for how many ppm have been displayed by the previous pixels
-			uint8_t currentPixel = 0;
-			while (ppmDrawn <= (ledCO2 - ppmPerPixel)) {
-				ppmDrawn += ppmPerPixel;
-				currentPixel++;
+		// Convert Lux to Luminance and smooth
+		if (ledLux != lux){
+			if (ledLux >lux){
+				ledLux--;
+			}else{
+				ledLux++;
 			}
+		
+			if (ledLux < MIN_USABLE_LUMINANCE && ledLux > 0) {
+				strip.SetLuminance(MIN_USABLE_LUMINANCE);
+			} else {
+				strip.SetLuminance(ledLux);	 // Luminance is a gamma corrected Brightness
+			}
+			updateLeds = true;	// SetLuminance does NOT affect current pixel data, therefore we must force Redraw of LEDs
+		}
 
-			strip.ClearTo(HsbColor(hue, 1.0f, 1.0f), 0, currentPixel - 1);	// apply base color to fully on pixels
 
-			lastL = float((ledCO2 - ppmDrawn) / ppmPerPixel);
-			strip.SetPixelColor(currentPixel, HsbColor(hue, 1.0f, lastL));//apply the inbetween color mix for the inbetween pixel
+		if (co2 > CO2_MIN && co2 < CO2_MAX ) {
+			if (ledCO2 != co2 || updateLeds) {	// only update leds if co2 has changed
+				// ledCO2 = ((ledCO2 * (CO2_SMOOTHING_FACTOR - 1)) + co2) / CO2_SMOOTHING_FACTOR; //smooth
 
-			strip.ClearTo(blackColor, currentPixel + 1, pixelCount);  // apply black to the last few leds
+				updateLeds = false;
 
-			strip.Show();// push led data to buffer
-			vTaskDelay(FrameTime / portTICK_PERIOD_MS);// time between frames
+				if (ledCO2 > co2) {
+					ledCO2--;
+				} else {
+					ledCO2++;
+				}
 
-		} else {  // co2 too high flash on off
+				hue = mapCO2ToHue(ledCO2);
 
-			brightness = 255;
-			strip.SetLuminance(brightness);
+				// Find Which Pixels are filled with base color, in-between and not lit
+				ppmDrawn = CO2_MIN;	 // ppmDrawn is a counter for how many ppm have been displayed by the previous pixels
+				uint8_t currentPixel = 1; //starts form first pixel )index = 1
+				while (ppmDrawn <= (ledCO2 - PPM_PER_PIXEL)) {
+					ppmDrawn += PPM_PER_PIXEL;
+					currentPixel++;
+				}
 
-			while (co2 > co2Max) {
-				strip.ClearTo(flashColor);
+				strip.ClearTo(HsbColor(hue, 1.0f, 1.0f), 0, currentPixel - 1);												// apply base color to first few pixels
+				strip.SetPixelColor(currentPixel, HsbColor(hue, 1.0f, (float(ledCO2 - ppmDrawn) / float(PPM_PER_PIXEL))));	// apply the in-between color mix for the in-between pixel
+				strip.ClearTo(OFF, currentPixel + 1, PIXEL_COUNT);															// apply black to the last few leds
+
+				strip.Show();  // push led data to buffer
+			}
+		}else{
+			if (co2 > CO2_MAX){
+				brightness = 255;
+				strip.SetLuminance(255);
+
+				while (co2 > CO2_MAX) {
+					strip.ClearTo(OFF);
+					strip.Show();
+					vTaskDelay(1000 / portTICK_PERIOD_MS);	// vTaskDelay wants ticks, not milliseconds
+					strip.ClearTo(WARNING_COLOR);
+					strip.Show();
+					vTaskDelay(1000 / portTICK_PERIOD_MS);	// vTaskDelay wants ticks, not milliseconds
+				}
+				ledCO2 = co2;  // ledCo2 will have not been updated during CO2 waring Flash
+				strip.ClearTo(OFF);
 				strip.Show();
 				vTaskDelay(1000 / portTICK_PERIOD_MS);	// vTaskDelay wants ticks, not milliseconds
-				strip.ClearTo(blackColor);
-				strip.Show();
-				vTaskDelay(1000 / portTICK_PERIOD_MS);	// vTaskDelay wants ticks, not milliseconds
+				
 			}
-			ledCO2 = co2;//ledCo2 will have not been updated
 		}
+		vTaskDelay(FRAME_TIME / portTICK_PERIOD_MS);  // time between frames
 	}
 }
 
@@ -232,32 +271,32 @@ void accessPoint(void *parameter) {
 }
 
 void LightSensor(void *parameter) {
-	DFRobot_VEML7700 als;
+	DFRobot_VEML7700 VEML7700;
 	float rawLux;
 	uint8_t error = 0;
-	vTaskDelay(1000 / portTICK_PERIOD_MS);	// allow time for boot and wire begin
+	vTaskDelay(5000 / portTICK_PERIOD_MS);	// allow time for boot
 
-	als.begin(); //comment out wire.begin() in this function
+	VEML7700.begin(); //comment out wire.begin() in this function
 
-	while (true){
-		error = als.getAutoWhiteLux(rawLux);  // Get the measured ambient light value
+	while (true) {
+		error = VEML7700.getWhiteLux(rawLux);  // Get the measured ambient light value
 
-		if (error) {
-			ESP_LOGW("VEML7700", "getAutoWhiteLux(): STATUS_ERROR");
-		}else if (rawLux <(65000/10)){//overflow protection for 16bit int
-			lux = int(rawLux*10);
+		if (!error) {
+			if (rawLux > 255.0f) {  // overflow protection for 8bit int
+				lux = 255;
+			} else {
+				lux = int(rawLux);
+			}
 		}else{
-			lux = 65000;
+			ESP_LOGW("VEML7700", "getAutoWhiteLux(): STATUS_ERROR");
 		}
 
-		vTaskDelay(500 / portTICK_PERIOD_MS);
+		vTaskDelay(1000 / portTICK_PERIOD_MS);
 	}
 }
 
 void CO2Sensor(void *parameter) {
 	SensirionI2CScd4x scd4x;
-
-	Wire.begin();
 
 	uint16_t error;
 	uint16_t co2Raw = 0;
@@ -274,7 +313,7 @@ void CO2Sensor(void *parameter) {
 		ESP_LOGD("SCD4x", "startPeriodicMeasurement(): %s", errorMessage);
 	}
 
-	Serial.print("\nCO2 (ppm),Temp (degC),Humidity (%RH)\n");
+	//Serial.print("\nCO2 (ppm),Temp (degC),Humidity (%RH)\n");
 
 	while (true) {
 
@@ -296,11 +335,9 @@ void CO2Sensor(void *parameter) {
 				errorToString(error, errorMessage, 256);
 				ESP_LOGW("SCD4x", "readMeasurement(): %s", errorMessage);
 
-			} else if (co2Raw == 0) {
-				ESP_LOGW("SCD4x", "CO2 = 0ppm, skipping");
 			} else {
-				Serial.printf("%i,%.1f,%.1f\n", co2Raw, temperature, humidity);
-				co2 = co2Raw;
+				//Serial.printf("%i,%.1f,%.1f\n", co2Raw, temperature, humidity);
+				co2 = co2Raw; //pass back to global co2 value
 			}
 		}
 		vTaskDelay(4750 / portTICK_PERIOD_MS);  //about 5s between readings, don't waste cpu time
@@ -311,7 +348,7 @@ void setup() {
 	Serial.setTxBufferSize(1024);
 	Serial.begin(115200);
 	while (!Serial);
-	ESP_LOGI("OSAQS", "Compiled " __DATE__ " " __TIME__ " by CD_FER");
+	ESP_LOGI("Kea Studios OSAQS", "%s Compiled on " __DATE__ " at " __TIME__ " by %s", VERSION, USER);
 
 	if (SPIFFS.begin()) {  // Initialize SPIFFS (ESP32 SPI Flash Storage)
 		if (SPIFFS.exists(LogFilename)) {
@@ -323,14 +360,20 @@ void setup() {
 		ESP_LOGE("File System", "Can't mount SPIFFS");
 	}
 
+	if (Wire.begin()) {  // Initialize I2C Bus (CO2 and Light Sensor)
+		//ESP_LOGV("I2C", "Initialized Correctly by %ims", millis()); //esp32-hal-i2c.c logs i2c init already
+	} else {
+		ESP_LOGE("I2C", "Can't begin I2C Bus");
+	}
+
 	// 			Function, Name (for debugging), Stack size, Params, Priority, Handle
 	// xTaskCreate(accessPoint, "accessPoint", 5000, NULL, 1, NULL);
-	xTaskCreatePinnedToCore(ARGBLEDs, "ARGBLEDs", 5000, NULL, 1, NULL, 1);
+	xTaskCreatePinnedToCore(AddressableRGBLeds, "AddressableRGBLeds", 5000, NULL, 1, NULL, 1);
 	xTaskCreatePinnedToCore(LightSensor, "LightSensor", 5000, NULL, 1, NULL, 1);
 	xTaskCreatePinnedToCore(CO2Sensor, "CO2Sensor", 5000, NULL, 1, NULL, 1);
 }
 
 void loop() {
-	vTaskSuspend(NULL);
+	vTaskSuspend(NULL); //pause this task
 	//vTaskDelay(1);	// Keep RTOS Happy with a 1 tick delay when there is nothing to do
 }
