@@ -18,14 +18,27 @@
 			"*.tcc": "cpp"
 		},
 		"cSpell.words": [
+			"ampdu",
+			"connecttest",
 			"deque",
 			"hotspot",
 			"IPURL",
+			"leds",
+			"LOGD",
+			"LOGI",
+			"LOGV",
+			"LOGW",
+			"millis",
+			"ncsi",
+			"onnotfound",
+			"OSAQS",
 			"rawbrightness",
 			"Sensirion",
 			"ssid",
+			"startpage",
 			"VEML",
 			"webserver",
+			"wpad",
 			"Wroom"
 		]
 	}

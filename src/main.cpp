@@ -45,6 +45,9 @@
 //SCD40/41 (CO2)
 #include <SensirionI2CScd4x.h>
 
+#define VERSION "V0.1.0-DEV"
+#define USER "CD_FER" //username to add to the startup serial output
+
 const char *ssid = "Kea-CO2";	// Name of the Wifi Access Point, FYI The SSID can't have a space in it.
 const char *password = "";		// Password of the Wifi Access Point, leave blank for no Password
 char LogFilename[] = "/Kea-CO2-Data.csv";	//name of the file which has the data in it.
@@ -59,17 +62,20 @@ const String localIPURL = "http://4.3.2.1/index.html";	// URL to the webserver (
 //    Global Variables
 //
 // -----------------------------------------
-uint16_t lux = 0;
+uint8_t lux = 255;
 uint16_t co2 = 450;
 
 /**
- * This sets the scale of the co2 level with all leds off being CO2 MIN and 
+ * This sets the scale of the co2 level and maps it to the hue of the LEDs
 */
 #define CO2_MAX 2000 	//top of the CO2 Scale (also when it transitions to warning Flash)
 #define CO2_MAX_HUE 0.0	//top of the Scale (Red Hue) 
 #define CO2_MIN 450		//bottom of the Scale
 #define CO2_MIN_HUE 0.3	//bottom of the Scale (Green Hue)
-#define CO2_SMOOTHING_FACTOR 100 //helps to make it look like we have continues data not a update every 5s
+#define CO2_SMOOTHING_FACTOR 100  // helps to make it look like we have continuous data not a update every 5s
+
+#define LUX_SMOOTHING_FACTOR 10	 // helps to make it look like we have continuous data not a update every 5s
+#define MIN_USABLE_LUMINANCE 48  // min Luminance when led's actually turn on
 
 #define PIXEL_COUNT 9
 #define PIXEL_DATA_PIN 2
@@ -92,10 +98,10 @@ void AddressableRGBLeds(void *parameter) {
 	float hue = CO2_MIN_HUE;
 	uint8_t brightness = 255;
 	uint16_t ledCO2 = CO2_MIN;  // internal co2 which has been smoothed
-	uint16_t rawbrightness = 0;	// ppm
+	uint8_t ledLux = 255;
+	bool updateLeds = true;
 
 	strip.Begin();
-	strip.SetLuminance(brightness);	 // (0-255) - initially at full brightness
 	strip.Show();
 	ESP_LOGV("LED Strip", "STARTED");
 
@@ -113,31 +119,47 @@ void AddressableRGBLeds(void *parameter) {
 
 
 	while (true) {
-		// Convert Lux to Brightness and smooth
-		// rawbrightness = sqrt(lux)*5;
+		// Convert Lux to Luminance and smooth
+		if (ledLux != lux){
+			if (ledLux >lux){
+				ledLux--;
+			}else{
+				ledLux++;
+			}
+		
+			if (ledLux < MIN_USABLE_LUMINANCE && ledLux > 0) {
+				strip.SetLuminance(MIN_USABLE_LUMINANCE);
+			} else {
+				strip.SetLuminance(ledLux);	 // Luminance is a gamma corrected Brightness
+			}
+			updateLeds = true;	// SetLuminance does NOT affect current pixel data, therefore we must force Redraw of LEDs
+		}
 
-		// if (rawbrightness < (255)) {
-		// 	brightness = ((brightness * 49) + (rawbrightness)) / 50;
-		// } else {
-		// 	brightness = ((brightness * 49) + (255)) / 50;
-		// }
-		// strip.SetLuminance(brightness);									// Luminance is a gamma corrected Brightness
 
-		//Smooth CO2
-		if (co2 > CO2_MIN && co2 < CO2_MAX) {
-			if (ledCO2 != co2){ //only update leds if co2 has changed
-				ledCO2 = ((ledCO2 * (CO2_SMOOTHING_FACTOR - 1)) + co2) / CO2_SMOOTHING_FACTOR;
+		if (co2 > CO2_MIN && co2 < CO2_MAX ) {
+			if (ledCO2 != co2 || updateLeds) {	// only update leds if co2 has changed
+				// ledCO2 = ((ledCO2 * (CO2_SMOOTHING_FACTOR - 1)) + co2) / CO2_SMOOTHING_FACTOR; //smooth
+
+				updateLeds = false;
+
+				if (ledCO2 > co2) {
+					ledCO2--;
+				} else {
+					ledCO2++;
+				}
+
 				hue = mapCO2ToHue(ledCO2);
-				// Find Which Pixels are filled with base color, inbetween and not lit
+
+				// Find Which Pixels are filled with base color, in-between and not lit
 				ppmDrawn = CO2_MIN;	 // ppmDrawn is a counter for how many ppm have been displayed by the previous pixels
-				uint8_t currentPixel = 1;
+				uint8_t currentPixel = 1; //starts form first pixel )index = 1
 				while (ppmDrawn <= (ledCO2 - PPM_PER_PIXEL)) {
 					ppmDrawn += PPM_PER_PIXEL;
 					currentPixel++;
 				}
 
-				strip.ClearTo(HsbColor(hue, 1.0f, 1.0f), 0, currentPixel - 1);												// apply base color to fully on pixels
-				strip.SetPixelColor(currentPixel, HsbColor(hue, 1.0f, (float(ledCO2 - ppmDrawn) / float(PPM_PER_PIXEL))));	// apply the inbetween color mix for the inbetween pixel
+				strip.ClearTo(HsbColor(hue, 1.0f, 1.0f), 0, currentPixel - 1);												// apply base color to first few pixels
+				strip.SetPixelColor(currentPixel, HsbColor(hue, 1.0f, (float(ledCO2 - ppmDrawn) / float(PPM_PER_PIXEL))));	// apply the in-between color mix for the in-between pixel
 				strip.ClearTo(OFF, currentPixel + 1, PIXEL_COUNT);															// apply black to the last few leds
 
 				strip.Show();  // push led data to buffer
@@ -148,14 +170,18 @@ void AddressableRGBLeds(void *parameter) {
 				strip.SetLuminance(255);
 
 				while (co2 > CO2_MAX) {
-					strip.ClearTo(WARNING_COLOR);
+					strip.ClearTo(OFF);
 					strip.Show();
 					vTaskDelay(1000 / portTICK_PERIOD_MS);	// vTaskDelay wants ticks, not milliseconds
-					strip.ClearTo(OFF);
+					strip.ClearTo(WARNING_COLOR);
 					strip.Show();
 					vTaskDelay(1000 / portTICK_PERIOD_MS);	// vTaskDelay wants ticks, not milliseconds
 				}
 				ledCO2 = co2;  // ledCo2 will have not been updated during CO2 waring Flash
+				strip.ClearTo(OFF);
+				strip.Show();
+				vTaskDelay(1000 / portTICK_PERIOD_MS);	// vTaskDelay wants ticks, not milliseconds
+				
 			}
 		}
 		vTaskDelay(FRAME_TIME / portTICK_PERIOD_MS);  // time between frames
@@ -245,27 +271,27 @@ void accessPoint(void *parameter) {
 }
 
 void LightSensor(void *parameter) {
-	DFRobot_VEML7700 als;
+	DFRobot_VEML7700 VEML7700;
 	float rawLux;
 	uint8_t error = 0;
-	vTaskDelay(1000 / portTICK_PERIOD_MS);	// allow time for boot and wire begin
+	vTaskDelay(5000 / portTICK_PERIOD_MS);	// allow time for boot
 
-	als.begin(); //comment out wire.begin() in this function
+	VEML7700.begin(); //comment out wire.begin() in this function
 
-	while (true){
-		error = als.getAutoWhiteLux(rawLux);  // Get the measured ambient light value
+	while (true) {
+		error = VEML7700.getWhiteLux(rawLux);  // Get the measured ambient light value
 
 		if (!error) {
-			if (rawLux >= (65000 / 10)) {  // overflow protection for 16bit int
-				lux = 65000;
+			if (rawLux > 255.0f) {  // overflow protection for 8bit int
+				lux = 255;
 			} else {
-				lux = int(rawLux * 10);
+				lux = int(rawLux);
 			}
 		}else{
 			ESP_LOGW("VEML7700", "getAutoWhiteLux(): STATUS_ERROR");
 		}
 
-		vTaskDelay(500 / portTICK_PERIOD_MS);
+		vTaskDelay(1000 / portTICK_PERIOD_MS);
 	}
 }
 
@@ -287,7 +313,7 @@ void CO2Sensor(void *parameter) {
 		ESP_LOGD("SCD4x", "startPeriodicMeasurement(): %s", errorMessage);
 	}
 
-	Serial.print("\nCO2 (ppm),Temp (degC),Humidity (%RH)\n");
+	//Serial.print("\nCO2 (ppm),Temp (degC),Humidity (%RH)\n");
 
 	while (true) {
 
@@ -309,11 +335,9 @@ void CO2Sensor(void *parameter) {
 				errorToString(error, errorMessage, 256);
 				ESP_LOGW("SCD4x", "readMeasurement(): %s", errorMessage);
 
-			} else if (co2Raw == 0) {
-				ESP_LOGW("SCD4x", "CO2 = 0ppm, skipping");
 			} else {
 				//Serial.printf("%i,%.1f,%.1f\n", co2Raw, temperature, humidity);
-				co2 = co2Raw;
+				co2 = co2Raw; //pass back to global co2 value
 			}
 		}
 		vTaskDelay(4750 / portTICK_PERIOD_MS);  //about 5s between readings, don't waste cpu time
@@ -324,7 +348,7 @@ void setup() {
 	Serial.setTxBufferSize(1024);
 	Serial.begin(115200);
 	while (!Serial);
-	ESP_LOGI("OSAQS", "Compiled " __DATE__ " " __TIME__ " by CD_FER");
+	ESP_LOGI("Kea Studios OSAQS", "%s Compiled on " __DATE__ " at " __TIME__ " by %s", VERSION, USER);
 
 	if (SPIFFS.begin()) {  // Initialize SPIFFS (ESP32 SPI Flash Storage)
 		if (SPIFFS.exists(LogFilename)) {
@@ -337,7 +361,7 @@ void setup() {
 	}
 
 	if (Wire.begin()) {  // Initialize I2C Bus (CO2 and Light Sensor)
-		ESP_LOGV("I2C", "Initialized Correctly by %ims", millis());
+		//ESP_LOGV("I2C", "Initialized Correctly by %ims", millis()); //esp32-hal-i2c.c logs i2c init already
 	} else {
 		ESP_LOGE("I2C", "Can't begin I2C Bus");
 	}
@@ -350,6 +374,6 @@ void setup() {
 }
 
 void loop() {
-	vTaskSuspend(NULL);
+	vTaskSuspend(NULL); //pause this task
 	//vTaskDelay(1);	// Keep RTOS Happy with a 1 tick delay when there is nothing to do
 }
