@@ -3,7 +3,7 @@
 
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Kea Water</title>
+    <title>Kea CO2</title>
     <link rel="stylesheet" href="index.css">
     <script src="apexcharts.min.js"></script>
 </head>
@@ -17,96 +17,107 @@
 <body>
     <div class="page">
         <div class="sideBar">
-            <a href="#temperature">
-                <div class="item" onclick="select(this)">
-                    <div class="activeIndicator selected">
-                        <img class="icon" src="temperature.svg">
-                    </div>
-                    <div class="label">Temperature</div>
-                </div>
-            </a>
-            <a href="#tds">
-                <div class="item" onclick="select(this)">
-                    <div class="activeIndicator">
-                        <img class="icon" src="tds.svg">
-                    </div>
-                    <div class="label">TDS</div>
-                </div>
-            </a>
-            <a href="#turbidity">
-                <div class="item" onclick="select(this)">
-                    <div class="activeIndicator">
-                        <img class="icon" src="turbidity.svg">
-                    </div>
-                    <div class="label">Turbidity</div>
-                </div>
-            </a>
-            <a href="#pH">
-                <div class="item" onclick="select(this)">
-                    <div class="activeIndicator">
-                        <img class="icon" src="pH.svg">
-                    </div>
-                    <div class="label">pH</div>
-                </div>
-            </a>
             <a href="#download">
                 <div class="item" onclick="select(this)">
-                    <div class="activeIndicator">
+                    <div class="activeIndicator selected">
                         <img class="icon" src="download.svg">
                     </div>
                     <div class="label">Download</div>
                 </div>
             </a>
+            <a href="#CO2">
+                <div class="item" onclick="select(this)">
+                    <div class="activeIndicator">
+                        <img class="icon" src="co2.svg">
+                    </div>
+                    <div class="label">CO2</div>
+                </div>
+            </a>
+            <a href="#Humidity">
+                <div class="item" onclick="select(this)">
+                    <div class="activeIndicator">
+                        <img class="icon" src="humidity.svg">
+                    </div>
+                    <div class="label">Humidity</div>
+                </div>
+            </a>
+            <a href="#Temperature">
+                <div class="item" onclick="select(this)">
+                    <div class="activeIndicator">
+                        <img class="icon" src="temperature.svg">
+                    </div>
+                    <div class="label">Temp</div>
+                </div>
+            </a>
+            <a href="#Light">
+                <div class="item" onclick="select(this)">
+                    <div class="activeIndicator">
+                        <img class="icon" src="light.svg">
+                    </div>
+                    <div class="label">Light</div>
+                </div>
+            </a>
         </div>
         <div class="content">
-            <!-- <div class="card" id="temperature">
-                <div class="chart" id="chart1"></div>
+            <div class="card" id="download">
                 <div class="cardContent">
-                    <h1>Temperature</h1>
-                    <p>Measured in degrees celcius, this Sensor uses a K type thermocouple operating at 3.3v</p>
-                    <a href="calibrate">
-                        <div class="cardButton">Calibrate</div>
+                    <h1>Download</h1>
+                    <p>Download the data as a csv file (Can be imported into Excel or Google Sheets).</p>
+                    <a href="Kea-CO2-Data.csv" download="Kea-CO2-Data.csv">
+                        <div class="cardButton">Download Data</div>
                     </a>
                 </div>
-            </div> -->
+            </div>
+            <div class="card" id="CO2">
+                <div class="chart" id="chartCO2"></div>
+                <div class="cardContent">
+                    <h1>Carbon Dioxide (CO<sub>2</sub>)</h1>
+                    <p>
+                        CO<sub>2</sub> is a key indicator for indoor air quality as high levels compromise humans’
+                        cognitive performance and well being.
+                        CO<sub>2</sub> is Measured in Parts Per Million (ppm).
+                        The Sensor uses a photoacoustic NDIR sensing principle and features humidity and temperature
+                        compensation.
+                    </p>
+                    <br></br>
+                    <p>Sensor Range: 400 - 40,000ppm</p>
+                    <p>Sensor Accuracy: &plusmn;50ppm (400-2,000ppm)</p>
+                </div>
+            </div>
+            <div class="card" id="Humidity">
+                <div class="chart" id="chartHumidity"></div>
+                <div class="cardContent">
+                    <h1>Humidity</h1>
+                    <p>
+                        Relative humidity (%RH) is a measure of the amount of water in the air.
+                        It is defined as the ratio of the partial pressure of water vapor in air to the saturation vapor
+                        pressure expressed as a percentage
+                    </p>
+                    <br></br>
+                    <p>Sensor Range: 0 - 100%RH</p>
+                    <p>Sensor Accuracy: &plusmn;6%RH</p>
+                </div>
+            </div>
             <div class="card" id="temperature">
                 <div class="chart" id="chartTemperature"></div>
                 <div class="cardContent">
                     <h1>Temperature</h1>
-                    <p>Measured in degrees celcius, this Sensor uses a thermistor operating at 3.3v</p>
+                    <p>Sensor Range: -10 - 60&deg;C</p>
+                    <p>Sensor Accuracy: &plusmn;0.8&deg;C</p>
                 </div>
             </div>
-            <div class="card" id="tds">
-                <div class="chart" id="chartTds"></div>
+            <div class="card" id="Light">
+                <div class="chart" id="chartLight"></div>
                 <div class="cardContent">
-                    <h1>Total Disolved Solids</h1>
-                    <p>Measured as the conductivity of the water, this is converted to parts per million (ppm) of disolved solids in the water using the standard 442 TDS solution.</p>
-                </div>
-            </div>
-            <div class="card" id="turbidity">
-                <div class="chart" id="chartTurbidity"></div>
-                <div class="cardContent">
-                    <h1>Turbidity</h1>
-                    <p>Coming Soon...</p>
-                </div>
-            </div>
-            <div class="card" id="pH">
-                <div class="chart" id="chart_pH"></div>
-                <div class="cardContent">
-                    <h1>pH</h1>
-                    <p>Measured on The pH scale using a pH probe. Make sure to calibrate the sensor once every 12 months at least and replace the sensor every 3-5 years.</p>
-                </div>
-            </div>
-            <div class="card" id="download">
-                <div class="cardContent">
-                    <h1>Download</h1>
-                    <p>You can download a copy of the data as a csv file.</p>
-                    <a href="Water_Quality_Data.csv">
-                        <div class="cardButton">View Data</div>
-                    </a>
-                    <a href="Water_Quality_Data.csv" download="Water_Quality_Data.csv">
-                        <div class="cardButton">Download Data</div>
-                    </a>
+                    <h1>Light Level</h1>
+                    <p>
+                        Lux (symbol: lx) is the SI unit of illuminance per unit area. It is equal to one lumen per
+                        square metre.
+                        The Sensor features 50 Hz and 60 Hz (Mains Power) flicker noise rejection.
+                    </p>
+                    <br></br>
+                    <p>Sensor Range: 0 - 120,000lx</p>
+                    <p>Sensor Resolution: &plusmn;0.004lx</p>
                 </div>
             </div>
         </div>
@@ -114,7 +125,7 @@
 </body>
 
 <script>
-    var numberOfDataSeries = 6
+    var numberOfDataSeries = 4
     var defaultChartOptions = {
         series: [{
             name: "Default Series Name",
@@ -123,51 +134,49 @@
         chart: {
             type: 'line',
             height: 350,
-            background: '#004880',
             animations: {
                 easing: 'easein',
             },
             fontFamily: 'Lato, sans-serif',
-            foreColor: '#d3e4ff',
-            zoom: {
-                enabled: true,
-                autoScaleYaxis: false,
-                zoomedArea: {
-                    fill: {
-                        color: '#90CAF9',
-                        opacity: 0.4
-                    },
-                    stroke: {
-                        color: '#0D47A1',
-                        opacity: 0.4,
-                        width: 1
-                    }
-                }
-            },
+            foreColor: '#111',
+            // zoom: {
+            //     enabled: true,
+            //     autoScaleYaxis: false,
+            //     zoomedArea: {
+            //         fill: {
+            //             color: '#f5f5f5',
+            //             opacity: 0.4
+            //         },
+            //         stroke: {
+            //             color: '#f5f5f5',
+            //             opacity: 0.4,
+            //             width: 1
+            //         }
+            //     }
+            // },
             toolbar: {
                 show: true,
                 tools: {
                     download: '<img class="icon" src="download.svg" width="50">',
                     selection: false,
-                    zoom: '<img class="icon" src="select.svg" width="50">',
-                    zoomin: '<img class="icon" src="zoom_in.svg" width="50">',
-                    zoomout: '<img class="icon" src="zoom_out.svg" width="50">',
+                    zoom: false,
+                    zoomin: false,
+                    zoomout: false,
                     pan: false,
-                    reset: '<img class="icon" src="zoom_out_map.svg" width="50">',
+                    reset: false,
                 }
             },
         },
-        color: '#d3e4ff',
+        //color: '#111',
         dataLabels: {
             enabled: true,
             style: {
                 fontSize: '14px',
                 fontFamily: 'Lato, sans-serif',
-                fontWeight: 'bold',
             },
             background: {
                 enabled: true,
-                foreColor: '#004880',
+                foreColor: '#f5f5f5',
                 padding: 8,
                 borderRadius: 12,
                 borderWidth: 0,
@@ -188,10 +197,11 @@
         },
         xaxis: {
             axisTicks: {
-                color: '#d3e4ff',
+                color: '#111',
             },
             axisBorder: {
                 show: true,
+                color: '#111',
             },
             labels: {
                 style: {
@@ -208,15 +218,16 @@
                 },
             },
             axisTicks: {
-                color: '#d3e4ff',
+                color: '#111',
                 show: true,
             },
             axisBorder: {
                 show: true,
+                color: '#111',
             },
             labels: {
                 style: {
-                    colors: '#d3e4ff',
+                    colors: '#111',
                     fontSize: '12px',
                     fontFamily: 'Lato, sans-serif',
                     fontWeight: 300,
@@ -225,25 +236,30 @@
         },
     };
 
+    var co2Options = Object.assign({}, JSON.parse(JSON.stringify(defaultChartOptions))) // clone the defaults, then overload the specifics
+    co2Options.series[0].name = "CO2"
+    co2Options.yaxis.title.text = 'Parts Per Million (PPM)'
+    co2Options.series[0].color = '#70AE6E'
+
+    var humidityOptions = Object.assign({}, JSON.parse(JSON.stringify(defaultChartOptions))) // clone the defaults, then overload the specifics
+    humidityOptions.series[0].name = "Humidity"
+    humidityOptions.yaxis.title.text = 'Relative humidity (%RH)'
+    humidityOptions.series[0].color = '#333745'
+
     var temperatureOptions = Object.assign({}, JSON.parse(JSON.stringify(defaultChartOptions))) // clone the defaults, then overload the specifics
     temperatureOptions.series[0].name = "Temperature"
     temperatureOptions.yaxis.title.text = 'Temperature (\xB0C)'
-    // temperatureOptions.chart.background = '#0048ff'
-    // temperatureOptions.chart.foreColor = '#d3e400'
-    // temperatureOptions.color = '#d3e400'
+    temperatureOptions.series[0].color = '#FE5F55'
 
-    var tdsOptions = Object.assign({}, JSON.parse(JSON.stringify(defaultChartOptions))) // clone the defaults, then overload the specifics
-    tdsOptions.series[0].name = "TDS"
-    tdsOptions.yaxis.title.text = 'Total Disolved Solids (PPM)'
+    var lightOptions = Object.assign({}, JSON.parse(JSON.stringify(defaultChartOptions))) // clone the defaults, then overload the specifics
+    lightOptions.series[0].name = "Light Level"
+    lightOptions.yaxis.title.text = 'Lux (lm/m\xB2)'
+    lightOptions.series[0].color = '#8B6220'
 
-    var phOptions = Object.assign({}, JSON.parse(JSON.stringify(defaultChartOptions))) // clone the defaults, then overload the specifics
-    phOptions.series[0].name = "pH"
-    phOptions.yaxis.title.text = 'pH Level (0-14)'
-
+    var chartCO2 = new ApexCharts(document.querySelector("#chartCO2"), co2Options);
+    var chartHumidity = new ApexCharts(document.querySelector("#chartHumidity"), humidityOptions);
     var chartTemperature = new ApexCharts(document.querySelector("#chartTemperature"), temperatureOptions);
-    var chartTds = new ApexCharts(document.querySelector("#chartTds"), tdsOptions);
-    // var chartTurbidity = new ApexCharts(document.querySelector("#chartTurbidity"), apexChartOptions);
-    var chart_pH = new ApexCharts(document.querySelector("#chart_pH"), phOptions);
+    var chartLight = new ApexCharts(document.querySelector("#chartLight"), lightOptions);
 
     window.onload = getData
 
@@ -251,43 +267,38 @@
         var xhttp = new XMLHttpRequest();
         xhttp.onreadystatechange = function () {
             if (this.readyState == 4 && this.status == 200) {
-                var prevDate = ''
                 var lines = this.responseText.split("\n");
                 lines && lines.forEach((line, lineNumber) => {
                     line = line.replace(/,\s*$/, "") // remove any trailing comma and white space
                     var rowValues = line.split(",")
-                    if (rowValues.length != (numberOfDataSeries + 2)) { // skip incomplete lines
+                    if (rowValues.length != (numberOfDataSeries + 1)) { // skip incomplete lines
                         console.log(`Line #${lineNumber} has ${rowValues.length} values, but we were expecting ${numberOfDataSeries + 2}\nLine: ${line}`)
                     } else {
-                        if (lineNumber == 0) { // ignore header row values, but push null values
-                            temperatureOptions.series[0].data.push({ x: ` `, y: null })
-                            tdsOptions.series[0].data.push({ x: ` `, y: null })
-                            phOptions.series[0].data.push({ x: ` `, y: null })
-                        } else {
+                        if (lineNumber != 0) { // ignore header row values
                             rowValues = rowValues.map(val => val.replace('\r', '')) // clean up \r from any values
-                            var dateStr = (rowValues[0] != prevDate) ? rowValues[0] + ' ' : ''
-                            prevDate = rowValues[0]
 
-                            temperatureOptions.series[0].data.push({ x: `${dateStr}${rowValues[1]}`, y: rowValues[5] })
-                            tdsOptions.series[0].data.push({ x: `${dateStr}${rowValues[1]}`, y: rowValues[6] })
-                            phOptions.series[0].data.push({ x: `${dateStr}${rowValues[1]}`, y: rowValues[7] })
+                            co2Options.series[0].data.push({ x: `${rowValues[0]}`, y: rowValues[1] })
+                            humidityOptions.series[0].data.push({ x: `${rowValues[0]}`, y: rowValues[2] })
+                            temperatureOptions.series[0].data.push({ x: `${rowValues[0]}`, y: rowValues[3] })
+                            lightOptions.series[0].data.push({ x: `${rowValues[0]}`, y: rowValues[4] })
                         }
                     }
                 })
                 // push null value at end (x is a non-breaking space)
+                co2Options.series[0].data.push({ x: '\xa0', y: null })
+                humidityOptions.series[0].data.push({ x: '\xa0', y: null })
                 temperatureOptions.series[0].data.push({ x: '\xa0', y: null })
-                tdsOptions.series[0].data.push({ x: '\xa0', y: null })
-                phOptions.series[0].data.push({ x: '\xa0', y: null })
+                lightOptions.series[0].data.push({ x: '\xa0', y: null })
 
+                chartCO2.render()
+                chartHumidity.render()
                 chartTemperature.render()
-                chartTds.render()
-                chart_pH.render()
+                chartLight.render()
             }
         };
-        xhttp.open("GET", "Water_Quality_Data.csv", true);
+        xhttp.open("GET", "Kea-CO2-Data.csv", true);
         xhttp.send();
     }
-
 </script>
 
 </html>

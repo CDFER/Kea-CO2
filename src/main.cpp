@@ -91,8 +91,7 @@ float mapCO2ToHue(uint16_t ledCO2){
 }
 
 void AddressableRGBLeds(void *parameter) {
-
-	NeoPixelBusLg<NeoGrbFeature, NeoWs2812xMethod> strip(PIXEL_COUNT, PIXEL_DATA_PIN); //uses i2s silicon remapped to any pin to drive led data
+	NeoPixelBusLg<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> strip(PIXEL_COUNT, PIXEL_DATA_PIN);	 // uses i2s silicon remapped to any pin to drive led data
 
 	uint16_t ppmDrawn = 0;
 	float hue = CO2_MIN_HUE;
@@ -253,11 +252,11 @@ void accessPoint(void *parameter) {
 	server.onNotFound([](AsyncWebServerRequest *request) {
 		request->redirect(localIPURL);
 		ESP_LOGW("WebServer", "Page not found sent redirect to localIPURL");
-		// DEBUG_SERIAL.print("onnotfound ");
-		// DEBUG_SERIAL.print(request->host());       //This gives some insight into whatever was being requested on the serial monitor
-		// DEBUG_SERIAL.print(" ");
-		// DEBUG_SERIAL.print(request->url());
-		// DEBUG_SERIAL.print(" sent redirect to " + localIPURL +"\n");
+		Serial.print("onnotfound ");
+		Serial.print(request->host());	// This gives some insight into whatever was being requested on the serial monitor
+		Serial.print(" ");
+		Serial.print(request->url());
+		Serial.println(" sent redirect to " + localIPURL + "\n");
 	});
 
 	server.begin();
@@ -367,7 +366,7 @@ void setup() {
 	}
 
 	// 			Function, Name (for debugging), Stack size, Params, Priority, Handle
-	// xTaskCreate(accessPoint, "accessPoint", 5000, NULL, 1, NULL);
+	xTaskCreate(accessPoint, "accessPoint", 5000, NULL, 1, NULL);
 	xTaskCreatePinnedToCore(AddressableRGBLeds, "AddressableRGBLeds", 5000, NULL, 1, NULL, 1);
 	xTaskCreatePinnedToCore(LightSensor, "LightSensor", 5000, NULL, 1, NULL, 1);
 	xTaskCreatePinnedToCore(CO2Sensor, "CO2Sensor", 5000, NULL, 1, NULL, 1);

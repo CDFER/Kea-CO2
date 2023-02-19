@@ -1,0 +1,4 @@
+TimeStamp(HH:MM:SS),CO2(PPM),Humidity(%RH),Temperature(Deg C),Light Level (Lux)
+01:01:01,100,50,25,1000
+01:01:02,200,51,26,1100
+01:01:02,300,52,27,1200
