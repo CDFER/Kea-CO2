@@ -1,24 +1,22 @@
-/*
-	Licence under the HIPPOCRATIC LICENSE Version 3.0, October 2021
-
-	Open Source Air Quality (CO2) Sensor Firmware
-
-	ESP32 Wroom Module as MCU
-	Lights up a strip of WS2812B Addressable RGB LEDs to display a scale of the ambient CO2 level
-	CO2 data is from a Sensirion SCD40
-	The LEDs are adjusted depending on the ambient Light data from a VEML7700
-	There is also a webserver which displays graphs of CO2, Humidity and Temperature while also providing a csv download for that data
-
-	The circuit:
-	* i2c (IO21 -> SDA, IO22 ->SCL) -> SCD40 & VEML7700 (3.3V Power and Data)
-	* IO2 (3.3V) -> SN74LVC2T45 Level Shifter (5v) -> WS2812B (5v Power and Data)
-	* USB C power (5v Rail) -> XC6220B331MR-G -> 3.3V Rail
-
-
-	Created 14.02.2023
-
-	By @CD_FER (Chris Dirks)
-*/
+/*!
+ * @file  main.cpp
+ * @brief  Kea Studios Open Source Air Quality (CO2) Sensor Firmware
+ * @copyright Chris Dirks (http://www.keastudios.co.nz)
+ * @license  HIPPOCRATIC LICENSE Version 3.0
+ * @author  @CD_FER (Chris Dirks)
+ * @created 14/02/2023
+ * @url  https://github.com/DFRobot/DFRobot_VEML7700
+ *
+ * ESP32 Wroom Module as MCU
+ * Lights up a strip of WS2812B Addressable RGB LEDs to display a scale of the ambient CO2 level
+ * CO2 data is from a Sensirion SCD40
+ * The LEDs are adjusted depending on the ambient Light data from a VEML7700=
+ * There is also a webserver which displays graphs of CO2, Humidity, Temperature and Lux while also providing a csv download for that data
+ *
+ * i2c (IO21 -> SDA, IO22 ->SCL) -> SCD40 & VEML7700 (3.3V Power and Data)
+ * IO2 (3.3V) -> SN74LVC2T45 Level Shifter (5v) -> WS2812B (5v Power and Data)
+ * USB C power (5v Rail) -> XC6220B331MR-G -> 3.3V Rail
+ */
 
 #include <Arduino.h>
 
@@ -45,9 +43,14 @@
 //SCD40/41 (CO2)
 #include <SensirionI2CScd4x.h>
 
+//to store last time data was recorded
+#include <Preferences.h>
+
 #define VERSION "V0.1.0-DEV"
 #define USER "CD_FER" //username to add to the startup serial output
 
+
+#define DATA_RECORD_INTERVAL 1*60*1000
 const char *ssid = "Kea-CO2";	// Name of the Wifi Access Point, FYI The SSID can't have a space in it.
 const char *password = "";		// Password of the Wifi Access Point, leave blank for no Password
 char LogFilename[] = "/Kea-CO2-Data.csv";	//name of the file which has the data in it.
@@ -62,8 +65,14 @@ const String localIPURL = "http://4.3.2.1/index.html";	// URL to the webserver (
 //    Global Variables
 //
 // -----------------------------------------
-uint8_t lux = 255;
-uint16_t co2 = 450;
+SemaphoreHandle_t globalVariablesSemaphore;
+uint8_t lux = 255;			// Global 8bit Lux (Max 255lx) Light Value from VEML7700 (updates every 1s)
+float rawLux = 0.0f;		// Global floating Lux Light Value from VEML7700 (updates every 1s)
+uint16_t co2 = 450;	 		// Global CO2 Level from SCD40 (updates every 5s)
+float temperature = 0.0f;  	// Global temperature from SCD40 (updates every 5s)
+float humidity = 0.0f;	   	// Global humidity Level from SCD40 (updates every 5s)
+
+SemaphoreHandle_t i2cBusSemaphore;
 
 /**
  * This sets the scale of the co2 level and maps it to the hue of the LEDs
@@ -225,12 +234,13 @@ void accessPoint(void *parameter) {
 	// SAFARI (IOS) there is a 128KB limit to the size of the HTML. The HTML can reference external resources/images that bring the total over 128KB
 	// SAFARI (IOS) popup browser has some severe limitations (javascript disabled, cookies disabled)
 
-	server.serveStatic("/Water_Quality_Data.csv", SPIFFS, "/Water_Quality_Data.csv").setCacheControl("no-store");  // fetch data file every page reload
+	server.serveStatic("/Kea-CO2-Data.csv", SPIFFS, "/Kea-CO2-Data.csv").setCacheControl("no-store");			   // fetch data file every page reload
 	server.serveStatic("/index.html", SPIFFS, "/index.html").setCacheControl("max-age=120");					   // serve html file
 
 	// Required
 	server.on("/connecttest.txt", [](AsyncWebServerRequest *request) { request->redirect("http://logout.net"); });	// windows 11 captive portal workaround
 	server.on("/wpad.dat", [](AsyncWebServerRequest *request) { request->send(404); });								// Honestly don't understand what this is but a 404 stops win 10 keep calling this repeatedly and panicking the esp32 :)
+	server.on("/favicon.ico", [](AsyncWebServerRequest *request) { request->send(404); });
 
 	// Background responses: Probably not all are Required, but some are. Others might speed things up?
 	// A Tier (commonly used by modern systems)
@@ -242,10 +252,10 @@ void accessPoint(void *parameter) {
 	server.on("/ncsi.txt", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });			   // windows call home
 
 	// B Tier (uncommon)
-	//  server.on("/chrome-variations/seed",[](AsyncWebServerRequest *request){request->send(200);}); //chrome captive portal call home
-	//  server.on("/service/update2/json",[](AsyncWebServerRequest *request){request->send(200);}); //firefox?
-	//  server.on("/chat",[](AsyncWebServerRequest *request){request->send(404);}); //No stop asking Whatsapp, there is no internet connection
-	//  server.on("/startpage",[](AsyncWebServerRequest *request){request->redirect(localIPURL);});
+	server.on("/chrome-variations/seed",[](AsyncWebServerRequest *request){request->send(200);}); //chrome captive portal call home
+	server.on("/service/update2/json",[](AsyncWebServerRequest *request){request->send(200);}); //firefox?
+	server.on("/chat",[](AsyncWebServerRequest *request){request->send(404);}); //No stop asking Whatsapp, there is no internet connection
+	server.on("/startpage",[](AsyncWebServerRequest *request){request->redirect(localIPURL);});
 
 	server.serveStatic("/", SPIFFS, "/").setCacheControl("max-age=120").setDefaultFile("index.html");  // serve any file on the device when requested
 
@@ -271,14 +281,17 @@ void accessPoint(void *parameter) {
 
 void LightSensor(void *parameter) {
 	DFRobot_VEML7700 VEML7700;
-	float rawLux;
 	uint8_t error = 0;
 	vTaskDelay(5000 / portTICK_PERIOD_MS);	// allow time for boot
 
+	xSemaphoreTake(i2cBusSemaphore, 1000 / portTICK_PERIOD_MS);
 	VEML7700.begin(); //comment out wire.begin() in this function
+	xSemaphoreGive(i2cBusSemaphore);
 
 	while (true) {
+		xSemaphoreTake(i2cBusSemaphore, 250 / portTICK_PERIOD_MS);
 		error = VEML7700.getWhiteLux(rawLux);  // Get the measured ambient light value
+		xSemaphoreGive(i2cBusSemaphore);
 
 		if (!error) {
 			if (rawLux > 255.0f) {  // overflow protection for 8bit int
@@ -299,18 +312,21 @@ void CO2Sensor(void *parameter) {
 
 	uint16_t error;
 	uint16_t co2Raw = 0;
-	float temperature = 0.0f;
-	float humidity = 0.0f;
+	float temperatureRaw = 0.0f;
+	float humidityRaw = 0.0f;
 	char errorMessage[256];
 	bool isDataReady = false;
 
-	scd4x.begin(Wire);
+	xSemaphoreTake(i2cBusSemaphore, 1000 / portTICK_PERIOD_MS);
 
+	scd4x.begin(Wire);
 	error = scd4x.startPeriodicMeasurement();
 	if (error) {
 		errorToString(error, errorMessage, 256);
 		ESP_LOGD("SCD4x", "startPeriodicMeasurement(): %s", errorMessage);
 	}
+
+	xSemaphoreGive(i2cBusSemaphore);
 
 	//Serial.print("\nCO2 (ppm),Temp (degC),Humidity (%RH)\n");
 
@@ -318,6 +334,7 @@ void CO2Sensor(void *parameter) {
 
 		error = 0;
 		isDataReady = false;
+		xSemaphoreTake(i2cBusSemaphore, 1000 / portTICK_PERIOD_MS);
 		do{
 			error = scd4x.getDataReadyFlag(isDataReady);
 			vTaskDelay(30 / portTICK_PERIOD_MS);	// about 5s between readings
@@ -329,18 +346,114 @@ void CO2Sensor(void *parameter) {
 			ESP_LOGW("SCD4x", "getDataReadyFlag(): %s", errorMessage);
 			
 		}else{
-			error = scd4x.readMeasurement(co2Raw, temperature, humidity);
+			error = scd4x.readMeasurement(co2Raw, temperatureRaw, humidityRaw);
 			if (error) {
 				errorToString(error, errorMessage, 256);
 				ESP_LOGW("SCD4x", "readMeasurement(): %s", errorMessage);
 
 			} else {
-				//Serial.printf("%i,%.1f,%.1f\n", co2Raw, temperature, humidity);
-				co2 = co2Raw; //pass back to global co2 value
+				// Serial.printf("%i,%.1f,%.1f\n", co2Raw, temperatureRaw, humidityRaw);
+
+				// pass back to global values
+				co2 = co2Raw;
+				temperature = temperatureRaw;
+				humidity = humidityRaw;
 			}
 		}
+		xSemaphoreGive(i2cBusSemaphore);
 		vTaskDelay(4750 / portTICK_PERIOD_MS);  //about 5s between readings, don't waste cpu time
 	}
+}
+
+void appendLineToCSV(void *parameter) {
+
+	// TimeStamp(HH:MM:SS),CO2(PPM),Humidity(%RH),Temperature(Deg C),Light Level (Lux)
+
+	Preferences preferences;
+	preferences.begin("time", false); //open time namespace on flash storage
+
+	//----- TimeStamp (HH:MM:SS) -----
+	uint64_t milliseconds = millis() + preferences.getULong64("lastTimeStamp", 0);
+	ESP_LOGI("timeStamp", "%i", milliseconds);
+	preferences.putULong64("lastTimeStamp", milliseconds); //save new time stamp to storage
+	preferences.end();// close namespace on flash storage
+
+	uint64_t seconds = milliseconds / 1000;
+
+	uint32_t minutes = seconds / 60;
+	//seconds %= 60;//modulo operator doesn't work on 64bit ints
+
+	uint32_t hours = minutes / 60;
+	minutes %= 60;
+
+	uint32_t days = hours / 24;
+	hours %= 24;
+
+	char timef[12];
+	sprintf(timef, "%i:%i:%i", days, hours, minutes);
+	//------------------------------------------------------
+
+	xSemaphoreTake(globalVariablesSemaphore, 1000 / portTICK_PERIOD_MS);
+
+	//----- CO2 (PPM) -------------------------------
+	char co2f[5];
+	if (co2 < 400 ) {
+		strcpy(co2f, "****");
+		ESP_LOGW("co2 Value", "co2 < 400 ");
+	} else {
+		sprintf(co2f, "%i", co2);
+	}
+	//-----------------------------------------------
+
+	//----- Humidity (%RH) --------------------------
+	char humidityf[5];
+	if (humidity < 0.0f|| humidity > 100.0f) {
+		strcpy(humidityf, "**");
+		ESP_LOGW("humidity Value", "humidity < 0 or humidity > 100");
+	} else {
+		dtostrf(humidity, -2, 0, humidityf);  // 2 characters with 0 decimal place and left aligned (negative width)
+	}
+	//-----------------------------------------------
+
+	//----- Temperature (degC) ----------------------
+	char temperaturef[5];
+	if (temperature < -10.0f || temperature > 60.0f) {
+		strcpy(temperaturef, "**.*");
+		ESP_LOGW("temperature Value", "temperature < -10 or temperature > 60");
+	} else {
+		dtostrf(temperature, -4, 1, temperaturef);	// 4 characters with 1 decimal place and left aligned (negative width)
+	}
+	//-----------------------------------------------
+
+	//----- Lux  ------------------------------------
+	char luxf[11];
+	if (rawLux < 0.0f || rawLux > 120000.0f) {
+		strcpy(luxf, "******.***");
+		ESP_LOGW("temperature Value", "lux < 0 or lux > 120,000");
+	} else {
+		dtostrf(rawLux, -10, 3, luxf);  // 4 characters with 1 decimal place and left aligned (negative width)
+	}
+	//-----------------------------------------------
+
+	xSemaphoreGive(globalVariablesSemaphore);
+
+	char csvLine[256];
+	// UTC_Date(YYYY-MM-DD),UTC_Time(HH:MM:SS),Latitude(Decimal),Longitude(Decimal),Altitude(Meters),Water Temperature(Deg C), TDS (PPM TDS442), pH (0-14)
+	sprintf(csvLine, "%s,%s,%s,%s,%s\r\n", timef, co2f, humidityf, temperaturef, luxf);
+	Serial.print(csvLine);
+
+	File CSV = SPIFFS.open(F(LogFilename), FILE_APPEND);
+	if (!CSV) {
+		ESP_LOGE("CSV File", "Error opening");
+	} else {
+		if (CSV.print(csvLine)) {
+			//ESP_LOGI("CSV File", "File append success");
+			CSV.close();
+		} else {
+			ESP_LOGE("CSV File", "File append failed");
+		}
+	}
+	vTaskDelete(NULL);
 }
 
 void setup() {
@@ -349,7 +462,7 @@ void setup() {
 	while (!Serial);
 	ESP_LOGI("Kea Studios OSAQS", "%s Compiled on " __DATE__ " at " __TIME__ " by %s", VERSION, USER);
 
-	if (SPIFFS.begin()) {  // Initialize SPIFFS (ESP32 SPI Flash Storage)
+	if (SPIFFS.begin(true)) {  // Initialize SPIFFS (ESP32 SPI Flash Storage) and format on fail
 		if (SPIFFS.exists(LogFilename)) {
 			ESP_LOGV("File System", "Initialized Correctly by %ims", millis());
 		} else {
@@ -365,14 +478,17 @@ void setup() {
 		ESP_LOGE("I2C", "Can't begin I2C Bus");
 	}
 
+	globalVariablesSemaphore = xSemaphoreCreateBinary();
+	i2cBusSemaphore = xSemaphoreCreateBinary();
+
 	// 			Function, Name (for debugging), Stack size, Params, Priority, Handle
-	xTaskCreate(accessPoint, "accessPoint", 5000, NULL, 1, NULL);
-	xTaskCreatePinnedToCore(AddressableRGBLeds, "AddressableRGBLeds", 5000, NULL, 1, NULL, 1);
-	xTaskCreatePinnedToCore(LightSensor, "LightSensor", 5000, NULL, 1, NULL, 1);
-	xTaskCreatePinnedToCore(CO2Sensor, "CO2Sensor", 5000, NULL, 1, NULL, 1);
+	xTaskCreate(accessPoint, "accessPoint", 5000, NULL, 3, NULL);
+	xTaskCreate(AddressableRGBLeds, "AddressableRGBLeds", 5000, NULL, 2, NULL);
+	xTaskCreate(LightSensor, "LightSensor", 5000, NULL, 1, NULL);
+	xTaskCreate(CO2Sensor, "CO2Sensor", 5000, NULL, 1, NULL);
 }
 
 void loop() {
-	vTaskSuspend(NULL); //pause this task
-	//vTaskDelay(1);	// Keep RTOS Happy with a 1 tick delay when there is nothing to do
+	vTaskDelay(DATA_RECORD_INTERVAL / portTICK_PERIOD_MS);
+	xTaskCreate(appendLineToCSV, "appendLineToCSV", 5000, NULL, 1, NULL);
 }
