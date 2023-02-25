@@ -135,7 +135,8 @@
             type: 'line',
             height: 350,
             animations: {
-                easing: 'easein',
+                enabled: false
+                //easing: 'easein',
             },
             fontFamily: 'Lato, sans-serif',
             foreColor: '#111',
@@ -168,21 +169,21 @@
             },
         },
         //color: '#111',
-        dataLabels: {
-            enabled: true,
-            style: {
-                fontSize: '14px',
-                fontFamily: 'Lato, sans-serif',
-            },
-            background: {
-                enabled: true,
-                foreColor: '#f5f5f5',
-                padding: 8,
-                borderRadius: 12,
-                borderWidth: 0,
-                opacity: 1,
-            },
-        },
+        // dataLabels: {
+        //     enabled: true,
+        //     style: {
+        //         fontSize: '14px',
+        //         fontFamily: 'Lato, sans-serif',
+        //     },
+        //     background: {
+        //         enabled: true,
+        //         foreColor: '#f5f5f5',
+        //         padding: 8,
+        //         borderRadius: 12,
+        //         borderWidth: 0,
+        //         opacity: 1,
+        //     },
+        // },
         stroke: {
             curve: 'smooth'
         },
@@ -209,6 +210,7 @@
                     fontWeight: 300,
                 },
             },
+            type: 'numeric'
         },
         yaxis: {
             title: {
@@ -233,6 +235,7 @@
                     fontWeight: 300,
                 },
             },
+            type: 'numeric'
         },
     };
 

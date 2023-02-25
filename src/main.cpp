@@ -324,6 +324,82 @@ void CO2Sensor(void *parameter) {
 	if (error) {
 		errorToString(error, errorMessage, 256);
 		ESP_LOGD("SCD4x", "startPeriodicMeasurement(): %s", errorMessage);
+
+		error = scd4x.stopPeriodicMeasurement();
+		if (error) {
+			Serial.print("Error trying to execute stopPeriodicMeasurement(): ");
+			errorToString(error, errorMessage, 256);
+			Serial.println(errorMessage);
+		}
+
+		uint16_t serial0;
+		uint16_t serial1;
+		uint16_t serial2;
+		error = scd4x.getSerialNumber(serial0, serial1, serial2);
+		if (error) {
+			Serial.print("Error trying to execute getSerialNumber(): ");
+			errorToString(error, errorMessage, 256);
+			Serial.println(errorMessage);
+		} else {
+			printf("%i %i %i\n",serial0, serial1, serial2);
+		}
+
+		// uint16_t sensorStatus;
+		// error = scd4x.performSelfTest(sensorStatus);
+		// if (error) {
+		// 	Serial.print("Error trying to execute performSelfTest(): ");
+		// 	errorToString(error, errorMessage, 256);
+		// 	Serial.println(errorMessage);
+		// } else {
+		// 	errorToString(sensorStatus, errorMessage, 256);
+		// 	Serial.println(errorMessage);
+		// 	//printf("sensorStatus = %i\n", sensorStatus);
+		// }
+
+		byte error, address;
+		int nDevices;
+		Serial.println("Scanning...");
+		nDevices = 0;
+		for (address = 1; address < 127; address++) {
+			Wire.beginTransmission(address);
+			error = Wire.endTransmission();
+			if (error == 0) {
+				Serial.print("I2C device found at address 0x");
+				if (address < 16) {
+					Serial.print("0");
+				}
+				Serial.println(address, HEX);
+				nDevices++;
+			} else if (error == 4) {
+				Serial.print("Unknow error at address 0x");
+				if (address < 16) {
+					Serial.print("0");
+				}
+				Serial.println(address, HEX);
+			}
+		}
+		if (nDevices == 0) {
+			Serial.println("No I2C devices found\n");
+		} else {
+			Serial.println("done\n");
+		}
+
+		error = scd4x.reinit();
+		if (error) {
+			Serial.print("Error trying to execute performFactoryReset(): ");
+			errorToString(error, errorMessage, 256);
+			Serial.println(errorMessage);
+		}
+
+		// Start Measurement
+		error = scd4x.startPeriodicMeasurement();
+		if (error) {
+			Serial.print("Error trying to execute startPeriodicMeasurement(): ");
+			errorToString(error, errorMessage, 256);
+			Serial.println(errorMessage);
+		}
+
+		Serial.println("");
 	}
 
 	xSemaphoreGive(i2cBusSemaphore);
@@ -352,7 +428,7 @@ void CO2Sensor(void *parameter) {
 				ESP_LOGW("SCD4x", "readMeasurement(): %s", errorMessage);
 
 			} else {
-				// Serial.printf("%i,%.1f,%.1f\n", co2Raw, temperatureRaw, humidityRaw);
+				//Serial.printf("%i,%.1f,%.1f\n", co2Raw, temperatureRaw, humidityRaw);
 
 				// pass back to global values
 				co2 = co2Raw;
@@ -374,7 +450,7 @@ void appendLineToCSV(void *parameter) {
 
 	//----- TimeStamp (HH:MM:SS) -----
 	uint64_t milliseconds = millis() + preferences.getULong64("lastTimeStamp", 0);
-	ESP_LOGI("timeStamp", "%i", milliseconds);
+	ESP_LOGI("New timeStamp:", "%i", milliseconds);
 	preferences.putULong64("lastTimeStamp", milliseconds); //save new time stamp to storage
 	preferences.end();// close namespace on flash storage
 
@@ -472,8 +548,8 @@ void setup() {
 		ESP_LOGE("File System", "Can't mount SPIFFS");
 	}
 
-	if (Wire.begin()) {  // Initialize I2C Bus (CO2 and Light Sensor)
-		//ESP_LOGV("I2C", "Initialized Correctly by %ims", millis()); //esp32-hal-i2c.c logs i2c init already
+	if (Wire.begin(21, 22,10000)) {	 // Initialize I2C Bus (CO2 and Light Sensor)
+		// ESP_LOGV("I2C", "Initialized Correctly by %ims", millis()); //esp32-hal-i2c.c logs i2c init already
 	} else {
 		ESP_LOGE("I2C", "Can't begin I2C Bus");
 	}
@@ -490,5 +566,5 @@ void setup() {
 
 void loop() {
 	vTaskDelay(DATA_RECORD_INTERVAL / portTICK_PERIOD_MS);
-	xTaskCreate(appendLineToCSV, "appendLineToCSV", 5000, NULL, 1, NULL);
+	//xTaskCreate(appendLineToCSV, "appendLineToCSV", 5000, NULL, 1, NULL);
 }
