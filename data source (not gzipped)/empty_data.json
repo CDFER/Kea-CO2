@@ -1,0 +1,46 @@
+[
+    {
+        "name": "CO2",
+        "data": [
+            [
+                0,
+                null
+            ]
+        ],
+        "color": "#70AE6E",
+        "y_title": "CO2 Parts Per Million (PPM)"
+    },
+    {
+        "name": "Humidity",
+        "data": [
+            [
+                0,
+                null
+            ]
+        ],
+        "color": "#333745",
+        "y_title": "Relative humidity (%RH)"
+    },
+    {
+        "name": "Temperature",
+        "data": [
+            [
+                0,
+                null
+            ]
+        ],
+        "color": "#FE5F55",
+        "y_title": "Temperature (Deg C)"
+    },
+    {
+        "name": "Light Level",
+        "data": [
+            [
+                0,
+                null
+            ]
+        ],
+        "color": "#8B6220",
+        "y_title": "Lux (lm/m^2)"
+    }
+]

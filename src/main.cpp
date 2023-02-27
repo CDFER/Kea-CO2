@@ -7,7 +7,7 @@
  * @created 14/02/2023
  * @url  https://github.com/DFRobot/DFRobot_VEML7700
  *
- * ESP32 Wroom Module as MCU
+ * ESP32 Wroom Module
  * Lights up a strip of WS2812B Addressable RGB LEDs to display a scale of the ambient CO2 level
  * CO2 data is from a Sensirion SCD40
  * The LEDs are adjusted depending on the ambient Light data from a VEML7700=
@@ -21,6 +21,7 @@
 #include <Arduino.h>
 
 // Wifi, Webserver and DNS
+#include <ArduinoJson.h>
 #include <DNSServer.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -49,11 +50,18 @@
 #define VERSION "V0.1.0-DEV"
 #define USER "CD_FER" //username to add to the startup serial output
 
+#define DATA_RECORD_INTERVAL_MINS 1
 
-#define DATA_RECORD_INTERVAL 1*60*1000
+char CSVLogFilename[] = "/Kea-CO2-Data.csv";  // location of the csv file
+#define MAX_CSV_SIZE_BYTES 1000000 //set max size at 1mb
+
+char jsonLogPreview[] = "/data.json";  // name of the file which has the json used for the graphs
+#define JSON_DATA_POINTS_MAX 32
+#define MIN_JSON_SIZE_BYTES 359 //tune to empty json size
+#define MAX_JSON_SIZE_BYTES 3000 //tune to number of Data Points
+
 const char *ssid = "Kea-CO2";	// Name of the Wifi Access Point, FYI The SSID can't have a space in it.
 const char *password = "";		// Password of the Wifi Access Point, leave blank for no Password
-char LogFilename[] = "/Kea-CO2-Data.csv";	//name of the file which has the data in it.
 
 const IPAddress localIP(4, 3, 2, 1);					// the IP address the webserver, Samsung requires the IP to be in public space
 const IPAddress gatewayIP(4, 3, 2, 1);					// IP address of the network (should be the same as the local IP in most cases)
@@ -65,18 +73,26 @@ const String localIPURL = "http://4.3.2.1/index.html";	// URL to the webserver (
 //    Global Variables
 //
 // -----------------------------------------
-SemaphoreHandle_t globalVariablesSemaphore;
+SemaphoreHandle_t globalVariablesSemaphore;	 // control which task (core) has access to the global variables
 uint8_t lux = 255;			// Global 8bit Lux (Max 255lx) Light Value from VEML7700 (updates every 1s)
-float rawLux = 0.0f;		// Global floating Lux Light Value from VEML7700 (updates every 1s)
-uint16_t co2 = 450;	 		// Global CO2 Level from SCD40 (updates every 5s)
-float temperature = 0.0f;  	// Global temperature from SCD40 (updates every 5s)
-float humidity = 0.0f;	   	// Global humidity Level from SCD40 (updates every 5s)
+float rawLux = -1.0f;		// Global floating Lux Light Value from VEML7700 (updates every 1s)
+uint16_t co2 = 0;	 		// Global CO2 Level from SCD40 (updates every 5s)
+float temperature = -100.0f;  	// Global temperature from SCD40 (updates every 5s)
+float humidity = -1.0f;	   	// Global humidity Level from SCD40 (updates every 5s)
 
-SemaphoreHandle_t i2cBusSemaphore;
+bool writeDataFlag = false;
 
-/**
- * This sets the scale of the co2 level and maps it to the hue of the LEDs
-*/
+// Allocate the JSON document spot in RAM
+// Use https://arduinojson.org/v6/assistant to compute the capacity.
+DynamicJsonDocument jsonDataDocument(10000);
+
+SemaphoreHandle_t i2cBusSemaphore; //control which task (core) has access to the i2c port
+
+// -----------------------------------------
+//
+//    Addressable LED Config
+//
+// -----------------------------------------
 #define CO2_MAX 2000 	//top of the CO2 Scale (also when it transitions to warning Flash)
 #define CO2_MAX_HUE 0.0	//top of the Scale (Red Hue) 
 #define CO2_MIN 450		//bottom of the Scale
@@ -210,7 +226,7 @@ void accessPoint(void *parameter) {
 	WiFi.mode(WIFI_AP);
 	WiFi.softAPConfig(localIP, gatewayIP, subnetMask);	// Samsung requires the IP to be in public space
 	WiFi.softAP(ssid, password, WIFI_CHANNEL, 0, MAX_CLIENTS);
-	WiFi.setSleep(false);
+	//WiFi.setSleep(false);
 
 	dnsServer.setTTL(300);				// set 5min client side cache for DNS
 	dnsServer.start(53, "*", localIP);	// if DNSServer is started with "*" for domain name, it will reply with provided IP to all DNS request
@@ -234,8 +250,9 @@ void accessPoint(void *parameter) {
 	// SAFARI (IOS) there is a 128KB limit to the size of the HTML. The HTML can reference external resources/images that bring the total over 128KB
 	// SAFARI (IOS) popup browser has some severe limitations (javascript disabled, cookies disabled)
 
-	server.serveStatic("/Kea-CO2-Data.csv", SPIFFS, "/Kea-CO2-Data.csv").setCacheControl("no-store");			   // fetch data file every page reload
+	server.serveStatic("/data.json", SPIFFS, "/data.json").setCacheControl("no-store");						   // fetch data file every request
 	server.serveStatic("/index.html", SPIFFS, "/index.html").setCacheControl("max-age=120");					   // serve html file
+	server.serveStatic("/", SPIFFS, "/").setCacheControl("max-age=120");			   // serve any file on the device when requested
 
 	// Required
 	server.on("/connecttest.txt", [](AsyncWebServerRequest *request) { request->redirect("http://logout.net"); });	// windows 11 captive portal workaround
@@ -256,8 +273,6 @@ void accessPoint(void *parameter) {
 	server.on("/service/update2/json",[](AsyncWebServerRequest *request){request->send(200);}); //firefox?
 	server.on("/chat",[](AsyncWebServerRequest *request){request->send(404);}); //No stop asking Whatsapp, there is no internet connection
 	server.on("/startpage",[](AsyncWebServerRequest *request){request->redirect(localIPURL);});
-
-	server.serveStatic("/", SPIFFS, "/").setCacheControl("max-age=120").setDefaultFile("index.html");  // serve any file on the device when requested
 
 	server.onNotFound([](AsyncWebServerRequest *request) {
 		request->redirect(localIPURL);
@@ -441,112 +456,258 @@ void CO2Sensor(void *parameter) {
 	}
 }
 
-void appendLineToCSV(void *parameter) {
+void createEmptyJson() {
+	StaticJsonDocument<768> doc;
 
-	// TimeStamp(HH:MM:SS),CO2(PPM),Humidity(%RH),Temperature(Deg C),Light Level (Lux)
+	JsonObject doc_0 = doc.createNestedObject();
+	doc_0["name"] = "CO2";
 
+	JsonArray doc_0_data_0 = doc_0["data"].createNestedArray();
+	doc_0_data_0.add(0);
+	doc_0_data_0.add(nullptr);
+	doc_0["color"] = "#70AE6E";
+	doc_0["y_title"] = "CO2 Parts Per Million (PPM)";
+
+	JsonObject doc_1 = doc.createNestedObject();
+	doc_1["name"] = "Humidity";
+
+	JsonArray doc_1_data_0 = doc_1["data"].createNestedArray();
+	doc_1_data_0.add(0);
+	doc_1_data_0.add(nullptr);
+	doc_1["color"] = "#333745";
+	doc_1["y_title"] = "Relative humidity (%RH)";
+
+	JsonObject doc_2 = doc.createNestedObject();
+	doc_2["name"] = "Temperature";
+
+	JsonArray doc_2_data_0 = doc_2["data"].createNestedArray();
+	doc_2_data_0.add(0);
+	doc_2_data_0.add(nullptr);
+	doc_2["color"] = "#FE5F55";
+	doc_2["y_title"] = "Temperature (Deg C)";
+
+	JsonObject doc_3 = doc.createNestedObject();
+	doc_3["name"] = "Light Level";
+
+	JsonArray doc_3_data_0 = doc_3["data"].createNestedArray();
+	doc_3_data_0.add(0);
+	doc_3_data_0.add(nullptr);
+	doc_3["color"] = "#8B6220";
+	doc_3["y_title"] = "Lux (lm/m^2)";
+
+	File file = SPIFFS.open(F(jsonLogPreview), FILE_WRITE, true);
+	if (!file) {
+		ESP_LOGE("Files", "Error Creating %s", (jsonLogPreview));
+	} else {
+		serializeJson(doc, file);
+		file.close();
+		ESP_LOGW("", "Setup %s", (jsonLogPreview));
+	}
+}
+
+void ARDUINO_ISR_ATTR onTimer() {
+	writeDataFlag = true;  // set flag for data write
+}
+
+void addDataToFiles(void *parameter) {
+	hw_timer_t *timer = NULL;
+
+	// Use 1st timer of 4 (counted from zero).
+	// Set 80 divider for prescaler (see ESP32 Technical Reference Manual for more info).
+	timer = timerBegin(0, 80, true);
+
+	// Attach onTimer function to our timer.
+	timerAttachInterrupt(timer, &onTimer, true);
+
+	// Set alarm to call onTimer function every second (value in microseconds).
+	// Repeat the alarm (third parameter)
+	timerAlarmWrite(timer, 1000000 * 60 *DATA_RECORD_INTERVAL_MINS, true);
+
+	// Start an alarm
+	timerAlarmEnable(timer);
+
+
+	//----- Import TimeStamp and Json Index -----
 	Preferences preferences;
-	preferences.begin("time", false); //open time namespace on flash storage
+	preferences.begin("time", false);							  // open time namespace on flash storage
+	uint32_t timeStamp = preferences.getInt("lastTimeStamp", 0);  // uint32_t timeStamp in minutes maxes at ~8000years
+	//ESP_LOGV("TimeStamp:", "%i mins", timeStamp);
+	uint8_t jsonIndex = preferences.getInt("jsonIndex", 0);
+	//ESP_LOGV("jsonIndex:", "%i", jsonIndex);
+	preferences.end();
 
-	//----- TimeStamp (HH:MM:SS) -----
-	uint64_t milliseconds = millis() + preferences.getULong64("lastTimeStamp", 0);
-	ESP_LOGI("New timeStamp:", "%i", milliseconds);
-	preferences.putULong64("lastTimeStamp", milliseconds); //save new time stamp to storage
-	preferences.end();// close namespace on flash storage
-
-	uint64_t seconds = milliseconds / 1000;
-
-	uint32_t minutes = seconds / 60;
-	//seconds %= 60;//modulo operator doesn't work on 64bit ints
-
-	uint32_t hours = minutes / 60;
-	minutes %= 60;
-
-	uint32_t days = hours / 24;
-	hours %= 24;
-
-	char timef[12];
-	sprintf(timef, "%i:%i:%i", days, hours, minutes);
-	//------------------------------------------------------
-
-	xSemaphoreTake(globalVariablesSemaphore, 1000 / portTICK_PERIOD_MS);
-
-	//----- CO2 (PPM) -------------------------------
-	char co2f[5];
-	if (co2 < 400 ) {
-		strcpy(co2f, "****");
-		ESP_LOGW("co2 Value", "co2 < 400 ");
-	} else {
-		sprintf(co2f, "%i", co2);
-	}
-	//-----------------------------------------------
-
-	//----- Humidity (%RH) --------------------------
-	char humidityf[5];
-	if (humidity < 0.0f|| humidity > 100.0f) {
-		strcpy(humidityf, "**");
-		ESP_LOGW("humidity Value", "humidity < 0 or humidity > 100");
-	} else {
-		dtostrf(humidity, -2, 0, humidityf);  // 2 characters with 0 decimal place and left aligned (negative width)
-	}
-	//-----------------------------------------------
-
-	//----- Temperature (degC) ----------------------
-	char temperaturef[5];
-	if (temperature < -10.0f || temperature > 60.0f) {
-		strcpy(temperaturef, "**.*");
-		ESP_LOGW("temperature Value", "temperature < -10 or temperature > 60");
-	} else {
-		dtostrf(temperature, -4, 1, temperaturef);	// 4 characters with 1 decimal place and left aligned (negative width)
-	}
-	//-----------------------------------------------
-
-	//----- Lux  ------------------------------------
-	char luxf[11];
-	if (rawLux < 0.0f || rawLux > 120000.0f) {
-		strcpy(luxf, "******.***");
-		ESP_LOGW("temperature Value", "lux < 0 or lux > 120,000");
-	} else {
-		dtostrf(rawLux, -10, 3, luxf);  // 4 characters with 1 decimal place and left aligned (negative width)
-	}
-	//-----------------------------------------------
-
-	xSemaphoreGive(globalVariablesSemaphore);
-
-	char csvLine[256];
-	// UTC_Date(YYYY-MM-DD),UTC_Time(HH:MM:SS),Latitude(Decimal),Longitude(Decimal),Altitude(Meters),Water Temperature(Deg C), TDS (PPM TDS442), pH (0-14)
-	sprintf(csvLine, "%s,%s,%s,%s,%s\r\n", timef, co2f, humidityf, temperaturef, luxf);
-	Serial.print(csvLine);
-
-	File CSV = SPIFFS.open(F(LogFilename), FILE_APPEND);
-	if (!CSV) {
-		ESP_LOGE("CSV File", "Error opening");
-	} else {
-		if (CSV.print(csvLine)) {
-			//ESP_LOGI("CSV File", "File append success");
-			CSV.close();
-		} else {
-			ESP_LOGE("CSV File", "File append failed");
+	//------------- Setup CSV File ----------------
+	uint8_t i = 0;
+	bool err;
+	//File csvDataFile; //
+	do {
+		err = true;
+		File csvDataFile = SPIFFS.open(F(CSVLogFilename), FILE_APPEND, true);  // open if exists CSVLogFilename, create if it doesn't
+		if (csvDataFile) { //Can I open the file?
+			if (csvDataFile.size() > 25) {  // does it have stuff in it ?
+				err = false;
+				ESP_LOGI("", "%s is %ikb", (CSVLogFilename), (csvDataFile.size() / 1000));
+			} else {
+				if (csvDataFile.print("TimeStamp(Mins),CO2(PPM),Humidity(%RH),Temperature(DegC),Luminance(Lux)\r\n")) {//Can I add a header?
+					ESP_LOGW("", "Setup %s", (CSVLogFilename));
+				} else {
+					ESP_LOGE("", "Error Printing to %s", (CSVLogFilename));
+				}
+			}
+		}else{
+			ESP_LOGE("", "Error Opening %s", (CSVLogFilename));
 		}
+		i++;
+		csvDataFile.close();
+	} while (i < 5 && err == true);
+
+	//------------- Setup json File ----------------
+	i = 0;
+	//File jsonDataFile;
+	do {
+		err = true;
+		File jsonDataFile = SPIFFS.open(F(jsonLogPreview), FILE_READ, true);	 // open if exists CSVLogFilename, create if it doesn't
+		if (jsonDataFile) {						 // Can I open the file?
+			if (jsonDataFile.size() > MIN_JSON_SIZE_BYTES && jsonDataFile.size() < MAX_JSON_SIZE_BYTES) {  // does it have stuff in it ?
+				DeserializationError error = deserializeJson(jsonDataDocument, jsonDataFile);
+				if (!error) {					 // Can I successfully deserialize it?
+					err = false;  
+					ESP_LOGI("", "%s is %ib", (jsonLogPreview), (jsonDataFile.size()));
+					jsonDataFile.close();
+				} else {
+					ESP_LOGE("", "Error deserializing %s", (jsonLogPreview));
+					jsonDataFile.close();
+				}
+			} else {
+				ESP_LOGE("", "%s is %ibytes", (jsonLogPreview), (jsonDataFile.size()));
+				jsonDataFile.close();
+				jsonIndex = 0;
+				createEmptyJson();
+			}
+		} else {
+			ESP_LOGE("", "Error Opening %s", (jsonLogPreview));
+		}
+		i++;
+	} while (i < 5 && err == true);
+
+	while (true) {
+		while (writeDataFlag == false) {
+			vTaskDelay(50 / portTICK_PERIOD_MS);
+		}
+
+		writeDataFlag = false;
+
+		ESP_LOGV("", "WritingData");
+
+		if (jsonIndex < JSON_DATA_POINTS_MAX) {
+			jsonIndex++;
+		} else {
+			jsonIndex = 0;
+		}
+
+		timeStamp += DATA_RECORD_INTERVAL_MINS;
+
+		preferences.begin("time", false);  // open time namespace on flash storage
+		preferences.putInt("jsonIndex", jsonIndex);
+		preferences.putInt("lastTimeStamp", timeStamp);	 // save new time stamp to storage
+		preferences.end();
+
+		//----- TimeStamp (Mins) -----------------------
+		char timef[11];
+		sprintf(timef, "%i", timeStamp);
+
+		for (size_t i = 0; i < 4; i++) {
+			jsonDataDocument[i]["data"][jsonIndex][0] = timeStamp;	// fill x values in json array
+		}
+		//------------------------------------------------------
+
+		xSemaphoreTake(globalVariablesSemaphore, 1000 / portTICK_PERIOD_MS);
+
+		//----- CO2 (PPM) -------------------------------
+		char co2f[6];
+		if (co2 < 400) {
+			strcpy(co2f, "");										   // blank cell in csv
+			jsonDataDocument[0]["data"][jsonIndex][1] = (char *)NULL;  // apexCharts treats NULL as missing data
+			ESP_LOGW("co2 Value", "co2 < 400 ");
+		} else {
+			sprintf(co2f, "%i", co2);
+			jsonDataDocument[0]["data"][jsonIndex][1] = co2;
+		}
+		//-----------------------------------------------
+
+		//----- Humidity (%RH) --------------------------
+		char humidityf[3];
+		if (humidity < 0.01f || humidity > 100.0f) {
+			strcpy(humidityf, "");
+			jsonDataDocument[1]["data"][jsonIndex][1] = (char *)NULL;
+			ESP_LOGW("humidity Value", "humidity < 0 or humidity > 100");
+		} else {
+			dtostrf(humidity, -2, 0, humidityf);  // 2 characters with 0 decimal place and left aligned (negative width)
+			jsonDataDocument[1]["data"][jsonIndex][1] = humidity;
+		}
+		//-----------------------------------------------
+
+		//----- Temperature (degC) ----------------------
+		char temperaturef[5];
+		if (temperature < -10.0f || temperature > 60.0f) {
+			strcpy(temperaturef, "");
+			jsonDataDocument[2]["data"][jsonIndex][1] = (char *)NULL;
+			ESP_LOGW("temperature Value", "temperature < -10 or temperature > 60");
+		} else {
+			dtostrf(temperature, -4, 1, temperaturef);	// 4 characters with 1 decimal place and left aligned (negative width)
+			jsonDataDocument[2]["data"][jsonIndex][1] = temperature;
+		}
+		//-----------------------------------------------
+
+		//----- Lux  ------------------------------------
+		char luxf[8];
+		if (rawLux < 0.1f || rawLux > 99999.0f) {
+			strcpy(luxf, "");
+			jsonDataDocument[3]["data"][jsonIndex][1] = (char *)NULL;
+			ESP_LOGW("light level Value", "lux < 0 or lux > 99,999");
+		} else {
+			dtostrf(rawLux, -7, 1, luxf);  // 7 characters with 1 decimal place and left aligned (negative width)
+			jsonDataDocument[3]["data"][jsonIndex][1] = rawLux;
+		}
+		//-----------------------------------------------
+
+		xSemaphoreGive(globalVariablesSemaphore);
+
+		File csvDataFile = SPIFFS.open(F(CSVLogFilename), FILE_APPEND);
+		if (csvDataFile.size() < MAX_CSV_SIZE_BYTES) {
+			csvDataFile.printf("%s,%s,%s,%s,%s\r\n", timef, co2f, humidityf, temperaturef, luxf);
+		} else {
+			ESP_LOGE("", "%s is too large", (CSVLogFilename));
+		}
+		ESP_LOGI("", "%s is %ib", (CSVLogFilename), (csvDataFile.size()));
+		csvDataFile.close();
+
+		File jsonDataFile = SPIFFS.open(F(jsonLogPreview), FILE_WRITE);
+		// serializeJsonPretty(jsonDataDocument, Serial);
+		if (jsonDataFile.size() < MAX_JSON_SIZE_BYTES) {
+			ESP_LOGI("", "%s is %ib", (jsonLogPreview), (jsonDataFile.size()));
+			serializeJson(jsonDataDocument, jsonDataFile);
+		} else {
+			ESP_LOGE("", "%s is too large", (jsonLogPreview));	
+		}
+		jsonDataFile.close();		
+
+		vTaskDelay((1000 * 60 * DATA_RECORD_INTERVAL_MINS)-1000 / portTICK_PERIOD_MS);	 // about don't waste cpu time while also accouting for compute time and drift
 	}
-	vTaskDelete(NULL);
 }
 
 void setup() {
 	Serial.setTxBufferSize(1024);
 	Serial.begin(115200);
 	while (!Serial);
-	ESP_LOGI("Kea Studios OSAQS", "%s Compiled on " __DATE__ " at " __TIME__ " by %s", VERSION, USER);
+	ESP_LOGI("Kea Studios OSAQS (Kea CO2)", "%s Compiled on " __DATE__ " at " __TIME__ " by %s", VERSION, USER);
 
 	if (SPIFFS.begin(true)) {  // Initialize SPIFFS (ESP32 SPI Flash Storage) and format on fail
-		if (SPIFFS.exists(LogFilename)) {
-			ESP_LOGV("File System", "Initialized Correctly by %ims", millis());
-		} else {
-			ESP_LOGE("File System", "Can't find %s", (LogFilename));
-		}
+		ESP_LOGV("", "FS init by %ims", millis());
 	} else {
-		ESP_LOGE("File System", "Can't mount SPIFFS");
+		ESP_LOGE("", "Error mounting SPIFFS (Even with Format on Fail)");
 	}
+
 
 	if (Wire.begin(21, 22,10000)) {	 // Initialize I2C Bus (CO2 and Light Sensor)
 		// ESP_LOGV("I2C", "Initialized Correctly by %ims", millis()); //esp32-hal-i2c.c logs i2c init already
@@ -562,9 +723,9 @@ void setup() {
 	xTaskCreate(AddressableRGBLeds, "AddressableRGBLeds", 5000, NULL, 2, NULL);
 	xTaskCreate(LightSensor, "LightSensor", 5000, NULL, 1, NULL);
 	xTaskCreate(CO2Sensor, "CO2Sensor", 5000, NULL, 1, NULL);
+	xTaskCreate(addDataToFiles, "addDataToFiles", 5000, NULL, 1, NULL);
 }
 
 void loop() {
-	vTaskDelay(DATA_RECORD_INTERVAL / portTICK_PERIOD_MS);
-	//xTaskCreate(appendLineToCSV, "appendLineToCSV", 5000, NULL, 1, NULL);
+	vTaskSuspend(NULL);
 }
