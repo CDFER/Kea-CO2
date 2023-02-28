@@ -35,84 +35,89 @@
 // Addressable LEDs
 #include <NeoPixelBusLg.h>	// instead of NeoPixelBus.h (has Luminace and Gamma as default)
 
-//I2C (CO2 & LUX)
+// I2C (CO2 & LUX)
 #include <Wire.h>
 
-//VEML7700 (LUX)
+// VEML7700 (LUX)
 #include <DFRobot_VEML7700.h>
 
-//SCD40/41 (CO2)
+// SCD40/41 (CO2)
 #include <SensirionI2CScd4x.h>
 
-//to store last time data was recorded
+// to store last time data was recorded
 #include <Preferences.h>
 
 #define VERSION "V0.1.0-DEV"
-#define USER "CD_FER" //username to add to the startup serial output
+#define USER "CD_FER"  // username to add to the startup serial output
 
 #define DATA_RECORD_INTERVAL_MINS 1
 
 char CSVLogFilename[] = "/Kea-CO2-Data.csv";  // location of the csv file
-#define MAX_CSV_SIZE_BYTES 1000000 //set max size at 1mb
+#define MAX_CSV_SIZE_BYTES 1000000			  // set max size at 1mb
 
 char jsonLogPreview[] = "/data.json";  // name of the file which has the json used for the graphs
 #define JSON_DATA_POINTS_MAX 32
-#define MIN_JSON_SIZE_BYTES 359 //tune to empty json size
-#define MAX_JSON_SIZE_BYTES 3000 //tune to number of Data Points
+#define MIN_JSON_SIZE_BYTES 359	  // tune to empty json size
+#define MAX_JSON_SIZE_BYTES 2100  // tune to number of Data Points
+// Allocate the JSON document spot in RAM
+// Use https://arduinojson.org/v6/assistant to compute the size.
+DynamicJsonDocument jsonDataDocument(8192);
 
-const char *ssid = "Kea-CO2";	// Name of the Wifi Access Point, FYI The SSID can't have a space in it.
-const char *password = "";		// Password of the Wifi Access Point, leave blank for no Password
+const char *ssid = "Kea-CO2";  // Name of the Wifi Access Point, FYI The SSID can't have a space in it.
+const char *password = "";	   // Password of the Wifi Access Point, leave blank for no Password
 
 const IPAddress localIP(4, 3, 2, 1);					// the IP address the webserver, Samsung requires the IP to be in public space
 const IPAddress gatewayIP(4, 3, 2, 1);					// IP address of the network (should be the same as the local IP in most cases)
 const String localIPURL = "http://4.3.2.1/index.html";	// URL to the webserver (Same as the local IP but as a string with http and the landing page subdomain)
 
-
 // -----------------------------------------
 //
-//    Global Variables
+//    Global Variables (used doubles over floats due to float errors with Arduino json)
 //
 // -----------------------------------------
-SemaphoreHandle_t globalVariablesSemaphore;	 // control which task (core) has access to the global variables
-uint8_t lux = 255;			// Global 8bit Lux (Max 255lx) Light Value from VEML7700 (updates every 1s)
-float rawLux = -1.0f;		// Global floating Lux Light Value from VEML7700 (updates every 1s)
-uint16_t co2 = 0;	 		// Global CO2 Level from SCD40 (updates every 5s)
-float temperature = -100.0f;  	// Global temperature from SCD40 (updates every 5s)
-float humidity = -1.0f;	   	// Global humidity Level from SCD40 (updates every 5s)
+SemaphoreHandle_t i2cBusSemaphore;	// control which task has access to the i2c port
 
-bool writeDataFlag = false;
+SemaphoreHandle_t veml7700DataSemaphore;  // control which task (core) has access to the global veml7700Data Variables
+bool veml7700DataValid = false;			  // Global flag if the VEML7700 variables hold valid data
+double Lux;								  // Global floating Lux
 
-// Allocate the JSON document spot in RAM
-// Use https://arduinojson.org/v6/assistant to compute the capacity.
-DynamicJsonDocument jsonDataDocument(10000);
+SemaphoreHandle_t scd40DataSemaphore;  // control which task (core) has access to the global scd40 Variables
+bool scd40DataValid = false;		   // Global flag if the SCD40 variables hold valid data
+uint16_t co2 = 0;					   // Global CO2 Level from SCD40 (updates every 5s)
+double temperature = 0;				   // Global temperature
+double humidity = 0;				   // Global humidity
 
-SemaphoreHandle_t i2cBusSemaphore; //control which task (core) has access to the i2c port
+hw_timer_t *timer = NULL;
+volatile bool writeDataFlag = false;
+
+
 
 // -----------------------------------------
 //
 //    Addressable LED Config
 //
 // -----------------------------------------
-#define CO2_MAX 2000 	//top of the CO2 Scale (also when it transitions to warning Flash)
-#define CO2_MAX_HUE 0.0	//top of the Scale (Red Hue) 
-#define CO2_MIN 450		//bottom of the Scale
-#define CO2_MIN_HUE 0.3	//bottom of the Scale (Green Hue)
-#define CO2_SMOOTHING_FACTOR 100  // helps to make it look like we have continuous data not a update every 5s
+#define CO2_MAX 2000	 // top of the CO2 Scale (also when it transitions to warning Flash)
+#define CO2_MAX_HUE 0.0	 // top of the Scale (Red Hue)
+#define CO2_MIN 450		 // bottom of the Scale
+#define CO2_MIN_HUE 0.3	 // bottom of the Scale (Green Hue)
 
-#define LUX_SMOOTHING_FACTOR 10	 // helps to make it look like we have continuous data not a update every 5s
-#define MIN_USABLE_LUMINANCE 48  // min Luminance when led's actually turn on
+#define MIN_USABLE_LUMINANCE 48	 // min Luminance when led's actually turn on
 
 #define PIXEL_COUNT 9
 #define PIXEL_DATA_PIN 2
-#define FRAME_TIME 30  // Milliseconds between frames 30ms = ~33.3fps max
+#define FRAME_TIME 30  // Milliseconds between frames 30ms = ~33.3fps maximum
 
 #define OFF RgbColor(0)
 #define WARNING_COLOR RgbColor(HsbColor(CO2_MAX_HUE, 1.0f, 1.0f))
 
 #define PPM_PER_PIXEL ((CO2_MAX - CO2_MIN) / PIXEL_COUNT)
 
-float mapCO2ToHue(uint16_t ledCO2){
-	return (float)(ledCO2 - (uint16_t)CO2_MIN) * ((float)CO2_MAX_HUE - (float)CO2_MIN_HUE) / (float)((uint16_t)CO2_MAX - (uint16_t)CO2_MIN) + (float) CO2_MIN_HUE;
+uint8_t globalLedLux = 255;	  // Global 8bit Lux (Max 255lx) (not Locked)
+uint16_t globalLedco2 = CO2_MIN;  // Global CO2 Level (not locked)
+
+float mapCO2ToHue(uint16_t ledCO2) {
+	return (float)(ledCO2 - (uint16_t)CO2_MIN) * ((float)CO2_MAX_HUE - (float)CO2_MIN_HUE) / (float)((uint16_t)CO2_MAX - (uint16_t)CO2_MIN) + (float)CO2_MIN_HUE;
 }
 
 void AddressableRGBLeds(void *parameter) {
@@ -121,36 +126,38 @@ void AddressableRGBLeds(void *parameter) {
 	uint16_t ppmDrawn = 0;
 	float hue = CO2_MIN_HUE;
 	uint8_t brightness = 255;
-	uint16_t ledCO2 = CO2_MIN;  // internal co2 which has been smoothed
-	uint8_t ledLux = 255;
+	uint16_t ledCO2 = CO2_MIN;	// internal co2 which has been smoothed
+	uint8_t ledLux = 0;
 	bool updateLeds = true;
 
 	strip.Begin();
-	strip.Show();
-	ESP_LOGV("LED Strip", "STARTED");
+	strip.Show();  // init to black
 
-	//Startup Fade IN OUT Green
-	for (uint8_t i = 0; i < 255; i++) {
-		strip.ClearTo(RgbColor(0,i,0));
-		strip.Show();
-		vTaskDelay((4500 / 255 / 2) / portTICK_PERIOD_MS);	 // vTaskDelay wants ticks, not milliseconds
-	}
-	for (uint8_t i = 255; i > 0; i--) {
+	// Startup Fade IN OUT Green
+	uint8_t i = 0;
+	while (i < 250) {
 		strip.ClearTo(RgbColor(0, i, 0));
 		strip.Show();
-		vTaskDelay((4500 / 255 / 2) / portTICK_PERIOD_MS);	// vTaskDelay wants ticks, not milliseconds
+		i += 5;
+		vTaskDelay(FRAME_TIME / portTICK_PERIOD_MS);	 // vTaskDelay wants ticks, not milliseconds
 	}
 
+	while (i > 5) {
+		strip.ClearTo(RgbColor(0, i, 0));
+		strip.Show();
+		i -= 5;
+		vTaskDelay(FRAME_TIME / portTICK_PERIOD_MS);  // vTaskDelay wants ticks, not milliseconds
+	}
 
 	while (true) {
 		// Convert Lux to Luminance and smooth
-		if (ledLux != lux){
-			if (ledLux >lux){
+		if (ledLux != globalLedLux) {
+			if (ledLux > globalLedLux) {
 				ledLux--;
-			}else{
+			} else {
 				ledLux++;
 			}
-		
+
 			if (ledLux < MIN_USABLE_LUMINANCE && ledLux > 0) {
 				strip.SetLuminance(MIN_USABLE_LUMINANCE);
 			} else {
@@ -159,24 +166,25 @@ void AddressableRGBLeds(void *parameter) {
 			updateLeds = true;	// SetLuminance does NOT affect current pixel data, therefore we must force Redraw of LEDs
 		}
 
+		// Convert globalLedco2 to ledco2 and smooth
+		if (globalLedco2 != ledCO2) {
+			if (ledCO2 > globalLedco2) {
+				ledCO2--;
+			} else {
+				ledCO2++;
+			}
+			updateLeds = true;
+		}
 
-		if (co2 > CO2_MIN && co2 < CO2_MAX ) {
-			if (ledCO2 != co2 || updateLeds) {	// only update leds if co2 has changed
-				// ledCO2 = ((ledCO2 * (CO2_SMOOTHING_FACTOR - 1)) + co2) / CO2_SMOOTHING_FACTOR; //smooth
-
+		if (ledCO2 < CO2_MAX) {
+			if (updateLeds) {  // only update leds if co2 has changed
 				updateLeds = false;
-
-				if (ledCO2 > co2) {
-					ledCO2--;
-				} else {
-					ledCO2++;
-				}
 
 				hue = mapCO2ToHue(ledCO2);
 
 				// Find Which Pixels are filled with base color, in-between and not lit
-				ppmDrawn = CO2_MIN;	 // ppmDrawn is a counter for how many ppm have been displayed by the previous pixels
-				uint8_t currentPixel = 1; //starts form first pixel )index = 1
+				ppmDrawn = CO2_MIN;		   // ppmDrawn is a counter for how many ppm have been displayed by the previous pixels
+				uint8_t currentPixel = 1;  // starts form first pixel )index = 1
 				while (ppmDrawn <= (ledCO2 - PPM_PER_PIXEL)) {
 					ppmDrawn += PPM_PER_PIXEL;
 					currentPixel++;
@@ -188,32 +196,29 @@ void AddressableRGBLeds(void *parameter) {
 
 				strip.Show();  // push led data to buffer
 			}
-		}else{
-			if (co2 > CO2_MAX){
-				brightness = 255;
-				strip.SetLuminance(255);
+		} else {
+			brightness = 255;
+			strip.SetLuminance(255);
 
-				while (co2 > CO2_MAX) {
-					strip.ClearTo(OFF);
-					strip.Show();
-					vTaskDelay(1000 / portTICK_PERIOD_MS);	// vTaskDelay wants ticks, not milliseconds
-					strip.ClearTo(WARNING_COLOR);
-					strip.Show();
-					vTaskDelay(1000 / portTICK_PERIOD_MS);	// vTaskDelay wants ticks, not milliseconds
-				}
-				ledCO2 = co2;  // ledCo2 will have not been updated during CO2 waring Flash
+			do {
 				strip.ClearTo(OFF);
 				strip.Show();
-				vTaskDelay(1000 / portTICK_PERIOD_MS);	// vTaskDelay wants ticks, not milliseconds
-				
-			}
+				vTaskDelay(1000 / portTICK_PERIOD_MS);
+				strip.ClearTo(WARNING_COLOR);
+				strip.Show();
+				vTaskDelay(1000 / portTICK_PERIOD_MS);
+			} while (co2 > CO2_MAX);
+			ledCO2 = co2;  // ledCo2 will have not been updated during CO2 waring Flash
+			strip.ClearTo(OFF);
+			strip.Show();
+			vTaskDelay(1000 / portTICK_PERIOD_MS);
 		}
 		vTaskDelay(FRAME_TIME / portTICK_PERIOD_MS);  // time between frames
 	}
 }
 
-void accessPoint(void *parameter) {
-#define DNS_INTERVAL 10	 // ms between processing dns requests: dnsServer.processNextRequest();
+void apWebserver(void *parameter) {
+#define DNS_INTERVAL 30	 // ms between processing dns requests: dnsServer.processNextRequest();
 
 #define MAX_CLIENTS 4
 #define WIFI_CHANNEL 6	// 2.4ghz channel 6
@@ -226,7 +231,7 @@ void accessPoint(void *parameter) {
 	WiFi.mode(WIFI_AP);
 	WiFi.softAPConfig(localIP, gatewayIP, subnetMask);	// Samsung requires the IP to be in public space
 	WiFi.softAP(ssid, password, WIFI_CHANNEL, 0, MAX_CLIENTS);
-	//WiFi.setSleep(false);
+	// WiFi.setSleep(false);
 
 	dnsServer.setTTL(300);				// set 5min client side cache for DNS
 	dnsServer.start(53, "*", localIP);	// if DNSServer is started with "*" for domain name, it will reply with provided IP to all DNS request
@@ -238,11 +243,11 @@ void accessPoint(void *parameter) {
 	wifi_init_config_t my_config = WIFI_INIT_CONFIG_DEFAULT();	// We use the default config ...
 	my_config.ampdu_rx_enable = false;							//... and modify only what we want.
 
-	esp_wifi_init(&my_config);	// set the new config
-	esp_wifi_start();			// Restart WiFi
+	esp_wifi_init(&my_config);			   // set the new config
+	esp_wifi_start();					   // Restart WiFi
 	vTaskDelay(100 / portTICK_PERIOD_MS);  // this is necessary don't ask me why
 
-	ESP_LOGV("AccessPoint", "Startup complete by %ims", (millis()));
+	//ESP_LOGV("apWebserver", "Startup complete by %ims", (millis()));
 
 	//======================== Webserver ========================
 	// WARNING IOS (and maybe macos) WILL NOT POP UP IF IT CONTAINS THE WORD "Success" https://www.esp8266.com/viewtopic.php?f=34&t=4398
@@ -250,9 +255,9 @@ void accessPoint(void *parameter) {
 	// SAFARI (IOS) there is a 128KB limit to the size of the HTML. The HTML can reference external resources/images that bring the total over 128KB
 	// SAFARI (IOS) popup browser has some severe limitations (javascript disabled, cookies disabled)
 
-	server.serveStatic("/data.json", SPIFFS, "/data.json").setCacheControl("no-store");						   // fetch data file every request
-	server.serveStatic("/index.html", SPIFFS, "/index.html").setCacheControl("max-age=120");					   // serve html file
-	server.serveStatic("/", SPIFFS, "/").setCacheControl("max-age=120");			   // serve any file on the device when requested
+	server.serveStatic("/data.json", SPIFFS, "/data.json").setCacheControl("no-store");		  // fetch data file every request
+	server.serveStatic("/index.html", SPIFFS, "/index.html").setCacheControl("max-age=120");  // serve html file
+	server.serveStatic("/", SPIFFS, "/").setCacheControl("max-age=120");					  // serve any file on the device when requested
 
 	// Required
 	server.on("/connecttest.txt", [](AsyncWebServerRequest *request) { request->redirect("http://logout.net"); });	// windows 11 captive portal workaround
@@ -269,10 +274,10 @@ void accessPoint(void *parameter) {
 	server.on("/ncsi.txt", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });			   // windows call home
 
 	// B Tier (uncommon)
-	server.on("/chrome-variations/seed",[](AsyncWebServerRequest *request){request->send(200);}); //chrome captive portal call home
-	server.on("/service/update2/json",[](AsyncWebServerRequest *request){request->send(200);}); //firefox?
-	server.on("/chat",[](AsyncWebServerRequest *request){request->send(404);}); //No stop asking Whatsapp, there is no internet connection
-	server.on("/startpage",[](AsyncWebServerRequest *request){request->redirect(localIPURL);});
+	server.on("/chrome-variations/seed", [](AsyncWebServerRequest *request) { request->send(200); });  // chrome captive portal call home
+	server.on("/service/update2/json", [](AsyncWebServerRequest *request) { request->send(200); });	   // firefox?
+	server.on("/chat", [](AsyncWebServerRequest *request) { request->send(404); });					   // No stop asking Whatsapp, there is no internet connection
+	server.on("/startpage", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });
 
 	server.onNotFound([](AsyncWebServerRequest *request) {
 		request->redirect(localIPURL);
@@ -286,7 +291,7 @@ void accessPoint(void *parameter) {
 
 	server.begin();
 
-	ESP_LOGV("WebServer", "Startup complete by %ims",(millis()));
+	ESP_LOGV("", "Startup complete by %ims", (millis()));
 
 	while (true) {
 		dnsServer.processNextRequest();
@@ -294,31 +299,74 @@ void accessPoint(void *parameter) {
 	}
 }
 
+void i2cScan() {
+	byte error, address;
+	int nDevices;
+	nDevices = 0;
+	for (address = 1; address < 127; address++) {
+		Wire.beginTransmission(address);
+		error = Wire.endTransmission();
+		if (error == 0) {
+			Serial.print("I2C device found at address 0x");
+			if (address < 16) {
+				Serial.print("0");
+			}
+			Serial.println(address, HEX);
+			nDevices++;
+		} else if (error == 4) {
+			Serial.print("Error at address 0x");
+			if (address < 16) {
+				Serial.print("0");
+			}
+			Serial.println(address, HEX);
+		}
+	}
+	if (nDevices == 0) {
+		ESP_LOGE("", "No I2C devices found on Scan");
+	}
+}
+
 void LightSensor(void *parameter) {
 	DFRobot_VEML7700 VEML7700;
 	uint8_t error = 0;
-	vTaskDelay(5000 / portTICK_PERIOD_MS);	// allow time for boot
+	float rawLux;
 
-	xSemaphoreTake(i2cBusSemaphore, 1000 / portTICK_PERIOD_MS);
-	VEML7700.begin(); //comment out wire.begin() in this function
-	xSemaphoreGive(i2cBusSemaphore);
+	vTaskDelay(1000 / portTICK_PERIOD_MS); //make sure co2 goes first
+
+	while (xSemaphoreTake(i2cBusSemaphore, 1) != pdTRUE) {
+		vTaskDelay(1100 / portTICK_PERIOD_MS);
+	};	// infinate loop, check every 1s for access to i2c bus
+
+	VEML7700.begin();
+	xSemaphoreGive(i2cBusSemaphore);  // release access to i2c bus
 
 	while (true) {
-		xSemaphoreTake(i2cBusSemaphore, 250 / portTICK_PERIOD_MS);
-		error = VEML7700.getWhiteLux(rawLux);  // Get the measured ambient light value
+		while (xSemaphoreTake(i2cBusSemaphore, 1) != pdTRUE) {
+			vTaskDelay(1100 / portTICK_PERIOD_MS);
+		};
+		error = VEML7700.getWhiteLux(rawLux);  // Get the measured ambient white light value
 		xSemaphoreGive(i2cBusSemaphore);
 
+		while (xSemaphoreTake(veml7700DataSemaphore, 1) != pdTRUE) {
+			vTaskDelay(900 / portTICK_PERIOD_MS);
+		};
+		veml7700DataValid = false;
 		if (!error) {
-			if (rawLux > 255.0f) {  // overflow protection for 8bit int
-				lux = 255;
-			} else {
-				lux = int(rawLux);
-			}
-		}else{
-			ESP_LOGW("VEML7700", "getAutoWhiteLux(): STATUS_ERROR");
-		}
+			if (rawLux < 120000.00f && rawLux > 0.00f) {
+				veml7700DataValid = true;
 
-		vTaskDelay(1000 / portTICK_PERIOD_MS);
+				Lux = rawLux;
+				if (rawLux > 255.0f) {	// overflow protection for 8bit int
+					globalLedLux = 255;
+				} else {
+					globalLedLux = int(rawLux);
+				}
+			}
+		} else {
+			ESP_LOGW("VEML7700", "getAutoWhiteLux(): ERROR");
+		}
+		xSemaphoreGive(veml7700DataSemaphore);
+		vTaskDelay(5000 / portTICK_PERIOD_MS);
 	}
 }
 
@@ -326,133 +374,81 @@ void CO2Sensor(void *parameter) {
 	SensirionI2CScd4x scd4x;
 
 	uint16_t error;
-	uint16_t co2Raw = 0;
-	float temperatureRaw = 0.0f;
-	float humidityRaw = 0.0f;
+	uint16_t co2Raw;
+	float temperatureRaw;
+	float humidityRaw;
 	char errorMessage[256];
 	bool isDataReady = false;
 
-	xSemaphoreTake(i2cBusSemaphore, 1000 / portTICK_PERIOD_MS);
+	while (xSemaphoreTake(i2cBusSemaphore, 1) != pdTRUE) {
+		vTaskDelay(100 / portTICK_PERIOD_MS);
+	};									   // infinate loop, check every 1s for access to i2c bus
+	scd4x.begin(Wire);					   // access i2c bus
+	vTaskDelay(100 / portTICK_PERIOD_MS);  // allow time for boot
 
-	scd4x.begin(Wire);
 	error = scd4x.startPeriodicMeasurement();
 	if (error) {
-		errorToString(error, errorMessage, 256);
-		ESP_LOGD("SCD4x", "startPeriodicMeasurement(): %s", errorMessage);
+		//errorToString(error, errorMessage, 256);
+		//ESP_LOGW("SCD4x", "startPeriodicMeasurement(): %s", errorMessage);
 
 		error = scd4x.stopPeriodicMeasurement();
 		if (error) {
-			Serial.print("Error trying to execute stopPeriodicMeasurement(): ");
 			errorToString(error, errorMessage, 256);
-			Serial.println(errorMessage);
+			ESP_LOGE("SCD4x", "stopPeriodicMeasurement(): %s", errorMessage);
+			i2cScan();
 		}
-
-		uint16_t serial0;
-		uint16_t serial1;
-		uint16_t serial2;
-		error = scd4x.getSerialNumber(serial0, serial1, serial2);
-		if (error) {
-			Serial.print("Error trying to execute getSerialNumber(): ");
-			errorToString(error, errorMessage, 256);
-			Serial.println(errorMessage);
-		} else {
-			printf("%i %i %i\n",serial0, serial1, serial2);
-		}
-
-		// uint16_t sensorStatus;
-		// error = scd4x.performSelfTest(sensorStatus);
-		// if (error) {
-		// 	Serial.print("Error trying to execute performSelfTest(): ");
-		// 	errorToString(error, errorMessage, 256);
-		// 	Serial.println(errorMessage);
-		// } else {
-		// 	errorToString(sensorStatus, errorMessage, 256);
-		// 	Serial.println(errorMessage);
-		// 	//printf("sensorStatus = %i\n", sensorStatus);
-		// }
-
-		byte error, address;
-		int nDevices;
-		Serial.println("Scanning...");
-		nDevices = 0;
-		for (address = 1; address < 127; address++) {
-			Wire.beginTransmission(address);
-			error = Wire.endTransmission();
-			if (error == 0) {
-				Serial.print("I2C device found at address 0x");
-				if (address < 16) {
-					Serial.print("0");
-				}
-				Serial.println(address, HEX);
-				nDevices++;
-			} else if (error == 4) {
-				Serial.print("Unknow error at address 0x");
-				if (address < 16) {
-					Serial.print("0");
-				}
-				Serial.println(address, HEX);
-			}
-		}
-		if (nDevices == 0) {
-			Serial.println("No I2C devices found\n");
-		} else {
-			Serial.println("done\n");
-		}
-
-		error = scd4x.reinit();
-		if (error) {
-			Serial.print("Error trying to execute performFactoryReset(): ");
-			errorToString(error, errorMessage, 256);
-			Serial.println(errorMessage);
-		}
-
-		// Start Measurement
 		error = scd4x.startPeriodicMeasurement();
 		if (error) {
-			Serial.print("Error trying to execute startPeriodicMeasurement(): ");
 			errorToString(error, errorMessage, 256);
-			Serial.println(errorMessage);
+			ESP_LOGW("SCD4x", "startPeriodicMeasurement(): %s", errorMessage);
 		}
-
-		Serial.println("");
 	}
-
 	xSemaphoreGive(i2cBusSemaphore);
 
-	//Serial.print("\nCO2 (ppm),Temp (degC),Humidity (%RH)\n");
-
 	while (true) {
-
 		error = 0;
 		isDataReady = false;
-		xSemaphoreTake(i2cBusSemaphore, 1000 / portTICK_PERIOD_MS);
-		do{
+		while (xSemaphoreTake(i2cBusSemaphore, 1) != pdTRUE) {
+			vTaskDelay(100 / portTICK_PERIOD_MS);
+		};	// infinate loop, check every 1s for access to i2c bus
+		do {
 			error = scd4x.getDataReadyFlag(isDataReady);
-			vTaskDelay(30 / portTICK_PERIOD_MS);	// about 5s between readings
+			vTaskDelay(30 / portTICK_PERIOD_MS);
 		} while (isDataReady == false);
 
-
+		while (xSemaphoreTake(scd40DataSemaphore, 1) != pdTRUE) {
+			vTaskDelay(1000 / portTICK_PERIOD_MS);
+		};
+		scd40DataValid = false;
 		if (error) {
 			errorToString(error, errorMessage, 256);
 			ESP_LOGW("SCD4x", "getDataReadyFlag(): %s", errorMessage);
-			
-		}else{
+
+		} else {
 			error = scd4x.readMeasurement(co2Raw, temperatureRaw, humidityRaw);
+			xSemaphoreGive(i2cBusSemaphore);
 			if (error) {
 				errorToString(error, errorMessage, 256);
 				ESP_LOGW("SCD4x", "readMeasurement(): %s", errorMessage);
 
 			} else {
-				//Serial.printf("%i,%.1f,%.1f\n", co2Raw, temperatureRaw, humidityRaw);
+				if ((40000 > co2Raw && co2Raw > 400) &&
+					(100.0f > temperatureRaw && temperatureRaw > (-10.0f)) &&
+					(100.0f > humidityRaw && humidityRaw > 0.0f)) {	 // data is sane
 
-				// pass back to global values
-				co2 = co2Raw;
-				temperature = temperatureRaw;
-				humidity = humidityRaw;
+					co2 = co2Raw;
+					globalLedco2 = co2Raw;
+					temperature = (double)temperatureRaw;
+					humidity = (double)humidityRaw;
+					scd40DataValid = true;
+
+				} else {
+					ESP_LOGW("SCD4x", "Out of Range co2:%i temp:%f humidity:%f", co2Raw, temperatureRaw, humidityRaw);
+				}
 			}
 		}
-		xSemaphoreGive(i2cBusSemaphore);
-		vTaskDelay(4750 / portTICK_PERIOD_MS);  //about 5s between readings, don't waste cpu time
+		xSemaphoreGive(scd40DataSemaphore);
+		vTaskDelay(4750 / portTICK_PERIOD_MS);	// about 5s between readings, don't waste cpu time
 	}
 }
 
@@ -505,56 +501,56 @@ void createEmptyJson() {
 	}
 }
 
-void ARDUINO_ISR_ATTR onTimer() {
-	writeDataFlag = true;  // set flag for data write
+void IRAM_ATTR onTimerInterrupt() {
+	writeDataFlag = true;  // set flag for data write during interrupt from timer
+}
+
+double roundTo2DP(double value) {  // rounds a number to 2 decimal places
+	return (int)(value * 100 + 0.5) / 100.0;
+}
+
+double roundTo1DP(double value) {  // rounds a number to 1 decimal place
+	return (int)(value * 10 + 0.5) / 10.0;
 }
 
 void addDataToFiles(void *parameter) {
-	hw_timer_t *timer = NULL;
+	
+	uint16_t csvDataFilesize = 0;
+	uint16_t jsonDataFilesize = 0;
+	uint32_t writeStart = 0;
 
-	// Use 1st timer of 4 (counted from zero).
-	// Set 80 divider for prescaler (see ESP32 Technical Reference Manual for more info).
-	timer = timerBegin(0, 80, true);
-
-	// Attach onTimer function to our timer.
-	timerAttachInterrupt(timer, &onTimer, true);
-
-	// Set alarm to call onTimer function every second (value in microseconds).
-	// Repeat the alarm (third parameter)
-	timerAlarmWrite(timer, 1000000 * 60 *DATA_RECORD_INTERVAL_MINS, true);
-
-	// Start an alarm
+	timer = timerBegin(0, 80, true);									   // timer_id = 0; divider=80 (80 MHz APB_CLK clock => 1MHz clock); countUp = true;
+	timerAttachInterrupt(timer, &onTimerInterrupt, false);					   // edge = false
+	timerAlarmWrite(timer, (1000000 * 60 * DATA_RECORD_INTERVAL_MINS), true);  // set time in microseconds
 	timerAlarmEnable(timer);
-
+	ESP_LOGV("", "timer init by %ims", millis());
 
 	//----- Import TimeStamp and Json Index -----
 	Preferences preferences;
-	preferences.begin("time", false);							  // open time namespace on flash storage
-	uint32_t timeStamp = preferences.getInt("lastTimeStamp", 0);  // uint32_t timeStamp in minutes maxes at ~8000years
-	//ESP_LOGV("TimeStamp:", "%i mins", timeStamp);
-	uint8_t jsonIndex = preferences.getInt("jsonIndex", 0);
-	//ESP_LOGV("jsonIndex:", "%i", jsonIndex);
+	preferences.begin("time", false);														  // open time namespace on flash storage
+	uint32_t timeStamp = preferences.getInt("lastTimeStamp", 0) + DATA_RECORD_INTERVAL_MINS;  // uint32_t timeStamp in minutes maxes at ~8000years
+	uint8_t jsonIndex = preferences.getInt("jsonIndex", 0);									  // what element of the json array are we adding data too
 	preferences.end();
 
 	//------------- Setup CSV File ----------------
 	uint8_t i = 0;
 	bool err;
-	//File csvDataFile; //
+	// File csvDataFile; //
 	do {
 		err = true;
 		File csvDataFile = SPIFFS.open(F(CSVLogFilename), FILE_APPEND, true);  // open if exists CSVLogFilename, create if it doesn't
-		if (csvDataFile) { //Can I open the file?
-			if (csvDataFile.size() > 25) {  // does it have stuff in it ?
+		if (csvDataFile) {													   // Can I open the file?
+			if (csvDataFile.size() > 25) {									   // does it have stuff in it ?
 				err = false;
-				ESP_LOGI("", "%s is %ikb", (CSVLogFilename), (csvDataFile.size() / 1000));
+				//ESP_LOGI("", "%s is %ikb", (CSVLogFilename), (csvDataFile.size() / 1000));
 			} else {
-				if (csvDataFile.print("TimeStamp(Mins),CO2(PPM),Humidity(%RH),Temperature(DegC),Luminance(Lux)\r\n")) {//Can I add a header?
+				if (csvDataFile.print("TimeStamp(Mins),CO2(PPM),Humidity(%RH),Temperature(DegC),Luminance(Lux)\r\n")) {	 // Can I add a header?
 					ESP_LOGW("", "Setup %s", (CSVLogFilename));
 				} else {
 					ESP_LOGE("", "Error Printing to %s", (CSVLogFilename));
 				}
 			}
-		}else{
+		} else {
 			ESP_LOGE("", "Error Opening %s", (CSVLogFilename));
 		}
 		i++;
@@ -563,23 +559,23 @@ void addDataToFiles(void *parameter) {
 
 	//------------- Setup json File ----------------
 	i = 0;
-	//File jsonDataFile;
+	// File jsonDataFile;
 	do {
 		err = true;
-		File jsonDataFile = SPIFFS.open(F(jsonLogPreview), FILE_READ, true);	 // open if exists CSVLogFilename, create if it doesn't
-		if (jsonDataFile) {						 // Can I open the file?
+		File jsonDataFile = SPIFFS.open(F(jsonLogPreview), FILE_READ, true);							   // open if exists CSVLogFilename, create if it doesn't
+		if (jsonDataFile) {																				   // Can I open the file?
 			if (jsonDataFile.size() > MIN_JSON_SIZE_BYTES && jsonDataFile.size() < MAX_JSON_SIZE_BYTES) {  // does it have stuff in it ?
 				DeserializationError error = deserializeJson(jsonDataDocument, jsonDataFile);
-				if (!error) {					 // Can I successfully deserialize it?
-					err = false;  
-					ESP_LOGI("", "%s is %ib", (jsonLogPreview), (jsonDataFile.size()));
+				if (!error) {  // Can I successfully deserialize it?
+					err = false;
+					//ESP_LOGI("", "%s is %ib", (jsonLogPreview), (jsonDataFile.size()));
 					jsonDataFile.close();
 				} else {
 					ESP_LOGE("", "Error deserializing %s", (jsonLogPreview));
 					jsonDataFile.close();
 				}
 			} else {
-				ESP_LOGE("", "%s is %ibytes", (jsonLogPreview), (jsonDataFile.size()));
+				//ESP_LOGE("", "%s is %ibytes", (jsonLogPreview), (jsonDataFile.size()));
 				jsonDataFile.close();
 				jsonIndex = 0;
 				createEmptyJson();
@@ -594,112 +590,94 @@ void addDataToFiles(void *parameter) {
 		while (writeDataFlag == false) {
 			vTaskDelay(50 / portTICK_PERIOD_MS);
 		}
-
 		writeDataFlag = false;
-
-		ESP_LOGV("", "WritingData");
-
-		if (jsonIndex < JSON_DATA_POINTS_MAX) {
-			jsonIndex++;
-		} else {
-			jsonIndex = 0;
-		}
-
-		timeStamp += DATA_RECORD_INTERVAL_MINS;
-
-		preferences.begin("time", false);  // open time namespace on flash storage
-		preferences.putInt("jsonIndex", jsonIndex);
-		preferences.putInt("lastTimeStamp", timeStamp);	 // save new time stamp to storage
-		preferences.end();
-
-		//----- TimeStamp (Mins) -----------------------
-		char timef[11];
-		sprintf(timef, "%i", timeStamp);
+		writeStart = millis();
 
 		for (size_t i = 0; i < 4; i++) {
 			jsonDataDocument[i]["data"][jsonIndex][0] = timeStamp;	// fill x values in json array
 		}
 		//------------------------------------------------------
 
-		xSemaphoreTake(globalVariablesSemaphore, 1000 / portTICK_PERIOD_MS);
+		//----- SCD40 Data -------------------------------
+		while (xSemaphoreTake(scd40DataSemaphore, 1) != pdTRUE) {
+			vTaskDelay(50 / portTICK_PERIOD_MS);
+		};
+		char scd4xf[18];  // temp char array for CSV 40000,99.9,99.9
+		if (scd40DataValid == true) {
+			sprintf(scd4xf, "%i,%i,%3.1f", co2, humidity, temperature);	 // for temp print atleast 3 characters with 1 decimal place
 
-		//----- CO2 (PPM) -------------------------------
-		char co2f[6];
-		if (co2 < 400) {
-			strcpy(co2f, "");										   // blank cell in csv
-			jsonDataDocument[0]["data"][jsonIndex][1] = (char *)NULL;  // apexCharts treats NULL as missing data
-			ESP_LOGW("co2 Value", "co2 < 400 ");
-		} else {
-			sprintf(co2f, "%i", co2);
 			jsonDataDocument[0]["data"][jsonIndex][1] = co2;
-		}
-		//-----------------------------------------------
-
-		//----- Humidity (%RH) --------------------------
-		char humidityf[3];
-		if (humidity < 0.01f || humidity > 100.0f) {
-			strcpy(humidityf, "");
-			jsonDataDocument[1]["data"][jsonIndex][1] = (char *)NULL;
-			ESP_LOGW("humidity Value", "humidity < 0 or humidity > 100");
+			jsonDataDocument[1]["data"][jsonIndex][1] = roundTo1DP(humidity);
+			jsonDataDocument[2]["data"][jsonIndex][1] = roundTo1DP(temperature);
 		} else {
-			dtostrf(humidity, -2, 0, humidityf);  // 2 characters with 0 decimal place and left aligned (negative width)
-			jsonDataDocument[1]["data"][jsonIndex][1] = humidity;
+			strcpy(scd4xf, ",,,");	// blank cells in csv
+			for (size_t i = 0; i < 3; i++) {
+				jsonDataDocument[i]["data"][jsonIndex][1] = (char *)NULL;  // apexCharts treats NULL as missing data
+			}
 		}
+		xSemaphoreGive(scd40DataSemaphore);
 		//-----------------------------------------------
 
-		//----- Temperature (degC) ----------------------
-		char temperaturef[5];
-		if (temperature < -10.0f || temperature > 60.0f) {
-			strcpy(temperaturef, "");
-			jsonDataDocument[2]["data"][jsonIndex][1] = (char *)NULL;
-			ESP_LOGW("temperature Value", "temperature < -10 or temperature > 60");
+		//----- VEML7700 (Lux) Data  --------------------
+		while (xSemaphoreTake(veml7700DataSemaphore, 1) != pdTRUE) {
+			vTaskDelay(50 / portTICK_PERIOD_MS);
+		};
+		char luxf[12];	// 119999.99
+		if (veml7700DataValid == true) {
+			sprintf(luxf, "%3.2f", Lux);  // print atleast 3 characters with 2 decimal place
+			jsonDataDocument[3]["data"][jsonIndex][1] = roundTo2DP(Lux);
 		} else {
-			dtostrf(temperature, -4, 1, temperaturef);	// 4 characters with 1 decimal place and left aligned (negative width)
-			jsonDataDocument[2]["data"][jsonIndex][1] = temperature;
-		}
-		//-----------------------------------------------
-
-		//----- Lux  ------------------------------------
-		char luxf[8];
-		if (rawLux < 0.1f || rawLux > 99999.0f) {
 			strcpy(luxf, "");
 			jsonDataDocument[3]["data"][jsonIndex][1] = (char *)NULL;
-			ESP_LOGW("light level Value", "lux < 0 or lux > 99,999");
-		} else {
-			dtostrf(rawLux, -7, 1, luxf);  // 7 characters with 1 decimal place and left aligned (negative width)
-			jsonDataDocument[3]["data"][jsonIndex][1] = rawLux;
+			ESP_LOGW("veml7700", "Data Not Valid");
 		}
+		xSemaphoreGive(veml7700DataSemaphore);
 		//-----------------------------------------------
 
-		xSemaphoreGive(globalVariablesSemaphore);
-
+		//----- Append line to CSV File -----------------
 		File csvDataFile = SPIFFS.open(F(CSVLogFilename), FILE_APPEND);
-		if (csvDataFile.size() < MAX_CSV_SIZE_BYTES) {
-			csvDataFile.printf("%s,%s,%s,%s,%s\r\n", timef, co2f, humidityf, temperaturef, luxf);
+		csvDataFilesize = csvDataFile.size();
+		if (csvDataFilesize < MAX_CSV_SIZE_BYTES) {	 // last line of defense for memory leaks
+			csvDataFile.printf("%i,%s,%s\r\n", timeStamp, scd4xf, luxf);
 		} else {
 			ESP_LOGE("", "%s is too large", (CSVLogFilename));
 		}
-		ESP_LOGI("", "%s is %ib", (CSVLogFilename), (csvDataFile.size()));
 		csvDataFile.close();
+		//-----------------------------------------------
 
+		//----- Write jsonDataDocument (RAM) to json File (Flash Storage) -----------------
 		File jsonDataFile = SPIFFS.open(F(jsonLogPreview), FILE_WRITE);
-		// serializeJsonPretty(jsonDataDocument, Serial);
-		if (jsonDataFile.size() < MAX_JSON_SIZE_BYTES) {
-			ESP_LOGI("", "%s is %ib", (jsonLogPreview), (jsonDataFile.size()));
-			serializeJson(jsonDataDocument, jsonDataFile);
+		jsonDataFilesize = jsonDataFile.size();
+		//serializeJsonPretty(jsonDataDocument, Serial);
+		if (jsonDataFilesize < MAX_JSON_SIZE_BYTES) {		// last line of defense for memory leaks
+			serializeJson(jsonDataDocument, jsonDataFile);	// serializes document (ram) and writes to file (Flash)
 		} else {
-			ESP_LOGE("", "%s is too large", (jsonLogPreview));	
+			ESP_LOGE("", "%s is too large", (jsonLogPreview));
 		}
-		jsonDataFile.close();		
+		jsonDataFile.close();
+		//-----------------------------------------------
 
-		vTaskDelay((1000 * 60 * DATA_RECORD_INTERVAL_MINS)-1000 / portTICK_PERIOD_MS);	 // about don't waste cpu time while also accouting for compute time and drift
+		//----- TimeStamp (Mins) -----------------------
+		timeStamp += DATA_RECORD_INTERVAL_MINS;
+		jsonIndex = (jsonIndex < JSON_DATA_POINTS_MAX) ? (jsonIndex + 1) : (0);	 // increment from 0 -> JSON_DATA_POINTS_MAX -> 0 -> etc...
+
+		preferences.begin("time", false);  // open time namespace on flash storage
+		preferences.putInt("jsonIndex", jsonIndex);
+		preferences.putInt("lastTimeStamp", timeStamp);	 // save new time stamp to storage
+		preferences.end();
+
+		ESP_LOGV("", "Wrote data in %ims, %s is %ikb, %s is %ib", (millis() - writeStart), CSVLogFilename, (csvDataFilesize / 1000), jsonLogPreview, jsonDataFilesize);
+
+		// don't waste cpu time while also accounting for ~1s to add data to files and ~0.5s RTOS inaccuracy
+		vTaskDelay(((1000 * 60 * DATA_RECORD_INTERVAL_MINS) - 1500) / portTICK_PERIOD_MS);
 	}
 }
 
 void setup() {
 	Serial.setTxBufferSize(1024);
 	Serial.begin(115200);
-	while (!Serial);
+	while (!Serial)
+		;
 	ESP_LOGI("Kea Studios OSAQS (Kea CO2)", "%s Compiled on " __DATE__ " at " __TIME__ " by %s", VERSION, USER);
 
 	if (SPIFFS.begin(true)) {  // Initialize SPIFFS (ESP32 SPI Flash Storage) and format on fail
@@ -708,24 +686,28 @@ void setup() {
 		ESP_LOGE("", "Error mounting SPIFFS (Even with Format on Fail)");
 	}
 
+	// 			Function, Name (for debugging), Stack size, Params, Priority, Handle
+	xTaskCreate(AddressableRGBLeds, "AddressableRGBLeds", 5000, NULL, 2, NULL);
+	xTaskCreate(apWebserver, "apWebserver", 5000, NULL, 3, NULL);
 
-	if (Wire.begin(21, 22,10000)) {	 // Initialize I2C Bus (CO2 and Light Sensor)
-		// ESP_LOGV("I2C", "Initialized Correctly by %ims", millis()); //esp32-hal-i2c.c logs i2c init already
+	if (Wire.begin(21, 22, 10000)) {  // Initialize I2C Bus (CO2 and Light Sensor)
+		ESP_LOGV("I2C", "Initialized Correctly by %ims", millis());
 	} else {
 		ESP_LOGE("I2C", "Can't begin I2C Bus");
 	}
 
-	globalVariablesSemaphore = xSemaphoreCreateBinary();
-	i2cBusSemaphore = xSemaphoreCreateBinary();
+	// Semaphore Mutexes lock resource access to a single task to prevent both cores crashing into each other.
+	veml7700DataSemaphore = xSemaphoreCreateMutex();
+	scd40DataSemaphore = xSemaphoreCreateMutex();
+	i2cBusSemaphore = xSemaphoreCreateMutex();
 
 	// 			Function, Name (for debugging), Stack size, Params, Priority, Handle
-	xTaskCreate(accessPoint, "accessPoint", 5000, NULL, 3, NULL);
-	xTaskCreate(AddressableRGBLeds, "AddressableRGBLeds", 5000, NULL, 2, NULL);
 	xTaskCreate(LightSensor, "LightSensor", 5000, NULL, 1, NULL);
 	xTaskCreate(CO2Sensor, "CO2Sensor", 5000, NULL, 1, NULL);
+
 	xTaskCreate(addDataToFiles, "addDataToFiles", 5000, NULL, 1, NULL);
 }
 
 void loop() {
-	vTaskSuspend(NULL);
+	vTaskSuspend(NULL);	 // Loop task Not Needed
 }
