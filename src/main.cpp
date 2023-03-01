@@ -367,7 +367,7 @@ void LightSensor(void *parameter) {
 		};
 		veml7700DataValid = false;
 		if (!error) {
-			if (rawLux < 120000.00f && rawLux > 0.00f) {
+			if (rawLux < 120000.00f && rawLux >= 0.00f) {
 				veml7700DataValid = true;
 
 				Lux = rawLux;

@@ -199,7 +199,7 @@
             .then(response => {
                 response.forEach((dataSeries, index) => {
                     dataSeries.data.sort((a, b) => a[0] - b[0])
-                    let i = dataSeries.data[32][0]
+                    let i = dataSeries.data[0][0]
                     dataSeries.data.forEach((datapoint) => {
                        datapoint[0] = datapoint[0] - i
                     })
