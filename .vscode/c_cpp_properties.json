@@ -488,7 +488,7 @@
                 "PLATFORMIO=60106",
                 "ARDUINO_ESP32_DEV",
                 "CORE_DEBUG_LEVEL=5",
-                "CONFIG_ARDUHAL_LOG_COLORS=true",
+                "CONFIG_ARDUHAL_LOG_COLORS=truelib_deps",
                 "HAVE_CONFIG_H",
                 "MBEDTLS_CONFIG_FILE=\"mbedtls/esp_config.h\"",
                 "UNITY_INCLUDE_CONFIG_H",

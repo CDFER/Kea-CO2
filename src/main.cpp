@@ -26,6 +26,7 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 
+#include "AsyncJson.h"
 #include "AsyncTCP.h"
 #include "ESPAsyncWebServer.h"
 
@@ -57,8 +58,8 @@ char CSVLogFilename[] = "/Kea-CO2-Data.csv";  // location of the csv file
 
 char jsonLogPreview[] = "/data.json";  // name of the file which has the json used for the graphs
 #define JSON_DATA_POINTS_MAX 32
-#define MIN_JSON_SIZE_BYTES 359	  // tune to empty json size
-#define MAX_JSON_SIZE_BYTES 2100  // tune to number of Data Points
+#define MIN_JSON_SIZE_BYTES 350	  // tune to empty json size
+#define MAX_JSON_SIZE_BYTES 3000  // tune to number of Data Points (do not forget to leave space for large timestamp)
 // Allocate the JSON document spot in RAM
 // Use https://arduinojson.org/v6/assistant to compute the size.
 DynamicJsonDocument jsonDataDocument(8192);
@@ -89,7 +90,6 @@ double humidity = 0;				   // Global humidity
 
 hw_timer_t *timer = NULL;
 volatile bool writeDataFlag = false;
-
 
 
 // -----------------------------------------
@@ -139,7 +139,7 @@ void AddressableRGBLeds(void *parameter) {
 		strip.ClearTo(RgbColor(0, i, 0));
 		strip.Show();
 		i += 5;
-		vTaskDelay(FRAME_TIME / portTICK_PERIOD_MS);	 // vTaskDelay wants ticks, not milliseconds
+		vTaskDelay(FRAME_TIME / portTICK_PERIOD_MS);  // vTaskDelay wants ticks, not milliseconds
 	}
 
 	while (i > 5) {
@@ -247,7 +247,7 @@ void apWebserver(void *parameter) {
 	esp_wifi_start();					   // Restart WiFi
 	vTaskDelay(100 / portTICK_PERIOD_MS);  // this is necessary don't ask me why
 
-	//ESP_LOGV("apWebserver", "Startup complete by %ims", (millis()));
+	// ESP_LOGV("apWebserver", "Startup complete by %ims", (millis()));
 
 	//======================== Webserver ========================
 	// WARNING IOS (and maybe macos) WILL NOT POP UP IF IT CONTAINS THE WORD "Success" https://www.esp8266.com/viewtopic.php?f=34&t=4398
@@ -255,8 +255,13 @@ void apWebserver(void *parameter) {
 	// SAFARI (IOS) there is a 128KB limit to the size of the HTML. The HTML can reference external resources/images that bring the total over 128KB
 	// SAFARI (IOS) popup browser has some severe limitations (javascript disabled, cookies disabled)
 
-	server.serveStatic("/data.json", SPIFFS, "/data.json").setCacheControl("no-store");		  // fetch data file every request
-	server.serveStatic("/index.html", SPIFFS, "/index.html").setCacheControl("max-age=120");  // serve html file
+	server.on("/data.json", HTTP_GET, [](AsyncWebServerRequest *request) {	// when client asks for the json data preview file..
+		AsyncResponseStream *response = request->beginResponseStream("application/json");
+		serializeJson(jsonDataDocument, *response);	 // turn the json document in ram into a normal json file (as a stream of data)
+		request->send(response);
+	});
+
+	server.serveStatic("/Kea-CO2-Data.csv", SPIFFS, "/Kea-CO2-Data.csv");
 	server.serveStatic("/", SPIFFS, "/").setCacheControl("max-age=120");					  // serve any file on the device when requested
 
 	// Required
@@ -281,7 +286,6 @@ void apWebserver(void *parameter) {
 
 	server.onNotFound([](AsyncWebServerRequest *request) {
 		request->redirect(localIPURL);
-		ESP_LOGW("WebServer", "Page not found sent redirect to localIPURL");
 		Serial.print("onnotfound ");
 		Serial.print(request->host());	// This gives some insight into whatever was being requested on the serial monitor
 		Serial.print(" ");
@@ -331,7 +335,7 @@ void LightSensor(void *parameter) {
 	uint8_t error = 0;
 	float rawLux;
 
-	vTaskDelay(1000 / portTICK_PERIOD_MS); //make sure co2 goes first
+	vTaskDelay(1000 / portTICK_PERIOD_MS);	// make sure co2 goes first
 
 	while (xSemaphoreTake(i2cBusSemaphore, 1) != pdTRUE) {
 		vTaskDelay(1100 / portTICK_PERIOD_MS);
@@ -388,8 +392,8 @@ void CO2Sensor(void *parameter) {
 
 	error = scd4x.startPeriodicMeasurement();
 	if (error) {
-		//errorToString(error, errorMessage, 256);
-		//ESP_LOGW("SCD4x", "startPeriodicMeasurement(): %s", errorMessage);
+		// errorToString(error, errorMessage, 256);
+		// ESP_LOGW("SCD4x", "startPeriodicMeasurement(): %s", errorMessage);
 
 		error = scd4x.stopPeriodicMeasurement();
 		if (error) {
@@ -491,14 +495,7 @@ void createEmptyJson() {
 	doc_3["color"] = "#8B6220";
 	doc_3["y_title"] = "Lux (lm/m^2)";
 
-	File file = SPIFFS.open(F(jsonLogPreview), FILE_WRITE, true);
-	if (!file) {
-		ESP_LOGE("Files", "Error Creating %s", (jsonLogPreview));
-	} else {
-		serializeJson(doc, file);
-		file.close();
-		ESP_LOGW("", "Setup %s", (jsonLogPreview));
-	}
+	jsonDataDocument = doc;
 }
 
 void IRAM_ATTR onTimerInterrupt() {
@@ -514,85 +511,59 @@ double roundTo1DP(double value) {  // rounds a number to 1 decimal place
 }
 
 void addDataToFiles(void *parameter) {
-	
-	uint16_t csvDataFilesize = 0;
-	uint16_t jsonDataFilesize = 0;
-	uint32_t writeStart = 0;
 
-	timer = timerBegin(0, 80, true);									   // timer_id = 0; divider=80 (80 MHz APB_CLK clock => 1MHz clock); countUp = true;
+	timer = timerBegin(0, 80, true);										   // timer_id = 0; divider=80 (80 MHz APB_CLK clock => 1MHz clock); countUp = true;
 	timerAttachInterrupt(timer, &onTimerInterrupt, false);					   // edge = false
 	timerAlarmWrite(timer, (1000000 * 60 * DATA_RECORD_INTERVAL_MINS), true);  // set time in microseconds
 	timerAlarmEnable(timer);
 	ESP_LOGV("", "timer init by %ims", millis());
 
-	//----- Import TimeStamp and Json Index -----
+	//----- Import TimeStamp  -----
 	Preferences preferences;
 	preferences.begin("time", false);														  // open time namespace on flash storage
-	uint32_t timeStamp = preferences.getInt("lastTimeStamp", 0) + DATA_RECORD_INTERVAL_MINS;  // uint32_t timeStamp in minutes maxes at ~8000years
-	uint8_t jsonIndex = preferences.getInt("jsonIndex", 0);									  // what element of the json array are we adding data too
+	uint32_t timeStamp = preferences.getInt("lastTimeStamp", 0);  // uint32_t timeStamp in minutes maxes at ~8000years
 	preferences.end();
 
+	//------------- Setup json -----------
+	createEmptyJson();
+	uint8_t jsonIndex = 0;
+	
 	//------------- Setup CSV File ----------------
-	uint8_t i = 0;
+	uint8_t retryCount = 0;
 	bool err;
-	// File csvDataFile; //
+	File csvDataFile = SPIFFS.open(F(CSVLogFilename), FILE_APPEND, true);  // open if exists CSVLogFilename, create if it doesn't
 	do {
 		err = true;
-		File csvDataFile = SPIFFS.open(F(CSVLogFilename), FILE_APPEND, true);  // open if exists CSVLogFilename, create if it doesn't
 		if (csvDataFile) {													   // Can I open the file?
 			if (csvDataFile.size() > 25) {									   // does it have stuff in it ?
 				err = false;
-				//ESP_LOGI("", "%s is %ikb", (CSVLogFilename), (csvDataFile.size() / 1000));
 			} else {
 				if (csvDataFile.print("TimeStamp(Mins),CO2(PPM),Humidity(%RH),Temperature(DegC),Luminance(Lux)\r\n")) {	 // Can I add a header?
-					ESP_LOGW("", "Setup %s", (CSVLogFilename));
+					ESP_LOGW("", "Setup %s with Header", (CSVLogFilename));
 				} else {
 					ESP_LOGE("", "Error Printing to %s", (CSVLogFilename));
 				}
+				csvDataFile.flush();
 			}
 		} else {
 			ESP_LOGE("", "Error Opening %s", (CSVLogFilename));
 		}
-		i++;
-		csvDataFile.close();
-	} while (i < 5 && err == true);
-
-	//------------- Setup json File ----------------
-	i = 0;
-	// File jsonDataFile;
-	do {
-		err = true;
-		File jsonDataFile = SPIFFS.open(F(jsonLogPreview), FILE_READ, true);							   // open if exists CSVLogFilename, create if it doesn't
-		if (jsonDataFile) {																				   // Can I open the file?
-			if (jsonDataFile.size() > MIN_JSON_SIZE_BYTES && jsonDataFile.size() < MAX_JSON_SIZE_BYTES) {  // does it have stuff in it ?
-				DeserializationError error = deserializeJson(jsonDataDocument, jsonDataFile);
-				if (!error) {  // Can I successfully deserialize it?
-					err = false;
-					//ESP_LOGI("", "%s is %ib", (jsonLogPreview), (jsonDataFile.size()));
-					jsonDataFile.close();
-				} else {
-					ESP_LOGE("", "Error deserializing %s", (jsonLogPreview));
-					jsonDataFile.close();
-				}
-			} else {
-				//ESP_LOGE("", "%s is %ibytes", (jsonLogPreview), (jsonDataFile.size()));
-				jsonDataFile.close();
-				jsonIndex = 0;
-				createEmptyJson();
-			}
-		} else {
-			ESP_LOGE("", "Error Opening %s", (jsonLogPreview));
-		}
-		i++;
-	} while (i < 5 && err == true);
+		retryCount++;
+	} while (retryCount < 5 && err == true);
 
 	while (true) {
+		// don't waste cpu time while also accounting for ~1s to add data to files and ~0.5s RTOS inaccuracy
+		vTaskDelay(((1000 * 60 * DATA_RECORD_INTERVAL_MINS) - 1500) / portTICK_PERIOD_MS);
+
 		while (writeDataFlag == false) {
 			vTaskDelay(50 / portTICK_PERIOD_MS);
 		}
-		writeDataFlag = false;
-		writeStart = millis();
 
+		//----- TimeStamp(Mins) -----------------------
+		timeStamp += DATA_RECORD_INTERVAL_MINS;
+
+		writeDataFlag = false; //reset timer interrupt flag
+		
 		for (size_t i = 0; i < 4; i++) {
 			jsonDataDocument[i]["data"][jsonIndex][0] = timeStamp;	// fill x values in json array
 		}
@@ -604,7 +575,7 @@ void addDataToFiles(void *parameter) {
 		};
 		char scd4xf[18];  // temp char array for CSV 40000,99.9,99.9
 		if (scd40DataValid == true) {
-			sprintf(scd4xf, "%i,%i,%3.1f", co2, humidity, temperature);	 // for temp print atleast 3 characters with 1 decimal place
+			sprintf(scd4xf, "%i,%1.0f,%3.1f", co2, humidity, temperature);	// for temp print atleast 3 characters with 1 decimal place
 
 			jsonDataDocument[0]["data"][jsonIndex][1] = co2;
 			jsonDataDocument[1]["data"][jsonIndex][1] = roundTo1DP(humidity);
@@ -614,6 +585,7 @@ void addDataToFiles(void *parameter) {
 			for (size_t i = 0; i < 3; i++) {
 				jsonDataDocument[i]["data"][jsonIndex][1] = (char *)NULL;  // apexCharts treats NULL as missing data
 			}
+			ESP_LOGW("scd40", "Data Not Valid");
 		}
 		xSemaphoreGive(scd40DataSemaphore);
 		//-----------------------------------------------
@@ -635,41 +607,29 @@ void addDataToFiles(void *parameter) {
 		//-----------------------------------------------
 
 		//----- Append line to CSV File -----------------
-		File csvDataFile = SPIFFS.open(F(CSVLogFilename), FILE_APPEND);
-		csvDataFilesize = csvDataFile.size();
+		char csvLine[32];
+		sprintf(csvLine, "%i,%s,%s\r\n", timeStamp, scd4xf, luxf);	// print atleast 3 characters with 2 decimal place
+		
+		vTaskPrioritySet(NULL, 3);  // increase priority so we get out of the way of the webserver Quickly
+		uint32_t writeStart = millis();
+		uint32_t csvDataFilesize = csvDataFile.size();	// must be 32bit (16 bit tops out at 65kb)
+		uint32_t csvDataFilesize = 0;	// must be 32bit (16 bit tops out at 65kb)
 		if (csvDataFilesize < MAX_CSV_SIZE_BYTES) {	 // last line of defense for memory leaks
-			csvDataFile.printf("%i,%s,%s\r\n", timeStamp, scd4xf, luxf);
+			csvDataFile.print(csvLine);
+			csvDataFile.flush();
+			uint32_t writeEnd = millis();
+			ESP_LOGV("", "Wrote data in %ims, %s is %ikb", (writeEnd - writeStart), CSVLogFilename, (csvDataFilesize / 1000));
 		} else {
-			ESP_LOGE("", "%s is too large", (CSVLogFilename));
+		 	ESP_LOGE("", "%s is too large", (CSVLogFilename));
 		}
-		csvDataFile.close();
+		vTaskPrioritySet(NULL, 0);  //reset task priority
 		//-----------------------------------------------
 
-		//----- Write jsonDataDocument (RAM) to json File (Flash Storage) -----------------
-		File jsonDataFile = SPIFFS.open(F(jsonLogPreview), FILE_WRITE);
-		jsonDataFilesize = jsonDataFile.size();
-		//serializeJsonPretty(jsonDataDocument, Serial);
-		if (jsonDataFilesize < MAX_JSON_SIZE_BYTES) {		// last line of defense for memory leaks
-			serializeJson(jsonDataDocument, jsonDataFile);	// serializes document (ram) and writes to file (Flash)
-		} else {
-			ESP_LOGE("", "%s is too large", (jsonLogPreview));
-		}
-		jsonDataFile.close();
-		//-----------------------------------------------
-
-		//----- TimeStamp (Mins) -----------------------
-		timeStamp += DATA_RECORD_INTERVAL_MINS;
-		jsonIndex = (jsonIndex < JSON_DATA_POINTS_MAX) ? (jsonIndex + 1) : (0);	 // increment from 0 -> JSON_DATA_POINTS_MAX -> 0 -> etc...
-
-		preferences.begin("time", false);  // open time namespace on flash storage
-		preferences.putInt("jsonIndex", jsonIndex);
+		preferences.begin("time", false);				 // open time namespace on flash storage
 		preferences.putInt("lastTimeStamp", timeStamp);	 // save new time stamp to storage
 		preferences.end();
 
-		ESP_LOGV("", "Wrote data in %ims, %s is %ikb, %s is %ib", (millis() - writeStart), CSVLogFilename, (csvDataFilesize / 1000), jsonLogPreview, jsonDataFilesize);
-
-		// don't waste cpu time while also accounting for ~1s to add data to files and ~0.5s RTOS inaccuracy
-		vTaskDelay(((1000 * 60 * DATA_RECORD_INTERVAL_MINS) - 1500) / portTICK_PERIOD_MS);
+		jsonIndex = (jsonIndex < JSON_DATA_POINTS_MAX) ? (jsonIndex + 1) : (0);	 // increment from 0 -> JSON_DATA_POINTS_MAX -> 0 -> etc...
 	}
 }
 
@@ -686,9 +646,9 @@ void setup() {
 		ESP_LOGE("", "Error mounting SPIFFS (Even with Format on Fail)");
 	}
 
-	// 			Function, Name (for debugging), Stack size, Params, Priority, Handle
-	xTaskCreate(AddressableRGBLeds, "AddressableRGBLeds", 5000, NULL, 2, NULL);
-	xTaskCreate(apWebserver, "apWebserver", 5000, NULL, 3, NULL);
+	// Pin to core so there are no collisions when trying to access files on SPIFFS
+	xTaskCreatePinnedToCore(apWebserver, "apWebserver", 5000, NULL, 1, NULL, 0);
+	xTaskCreatePinnedToCore(addDataToFiles, "addDataToFiles", 3500, NULL, 1, NULL, 0);
 
 	if (Wire.begin(21, 22, 10000)) {  // Initialize I2C Bus (CO2 and Light Sensor)
 		ESP_LOGV("I2C", "Initialized Correctly by %ims", millis());
@@ -702,10 +662,9 @@ void setup() {
 	i2cBusSemaphore = xSemaphoreCreateMutex();
 
 	// 			Function, Name (for debugging), Stack size, Params, Priority, Handle
-	xTaskCreate(LightSensor, "LightSensor", 5000, NULL, 1, NULL);
-	xTaskCreate(CO2Sensor, "CO2Sensor", 5000, NULL, 1, NULL);
-
-	xTaskCreate(addDataToFiles, "addDataToFiles", 5000, NULL, 1, NULL);
+	xTaskCreatePinnedToCore(LightSensor, "LightSensor", 2000, NULL, 0, NULL, 1);
+	xTaskCreatePinnedToCore(CO2Sensor, "CO2Sensor", 3000, NULL, 0, NULL, 1);
+	xTaskCreatePinnedToCore(AddressableRGBLeds, "AddressableRGBLeds", 2000, NULL, 0, NULL, 1);
 }
 
 void loop() {
