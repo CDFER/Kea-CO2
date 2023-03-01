@@ -60,12 +60,21 @@
         </div>
         <div class="content">
             <div class="card" id="download">
-                <div class="cardContent">
-                    <h1>Download</h1>
+                <div class="cardContent" style="padding:16px; ">
+                    <h1>Data</h1>
                     <p>Download the data as a csv file (Can be imported into Excel or Google Sheets).</p>
-                    <a href="Kea-CO2-Data.csv" download="Kea-CO2-Data.csv">
-                        <div class="cardButton">Download Data</div>
-                    </a>
+                    <div class="flex-container">
+                        <div class = "flex-box">
+                            <a href="Kea-CO2-Data.csv" download="Kea-CO2-Data.csv">
+                                <div class="cardButton"  style = "background:#355B33;">Download Data</div>
+                            </a>
+                        </div>
+                        <div class = "flex-box">
+                            <a href="clear.html">
+                                <div class="cardButton" style = "background:#5b3c33;">Clear All Data</div>
+                            </a>
+                        </div>
+                    </div>
                 </div>
             </div>
             <div class="card" id="CO2">
@@ -98,7 +107,7 @@
                     <p>Sensor Accuracy: &plusmn;6%RH</p>
                 </div>
             </div>
-            <div class="card" id="temperature">
+            <div class="card" id="Temperature">
                 <div class="chart" id="chartTemperature"></div>
                 <div class="cardContent">
                     <h1>Temperature</h1>
@@ -117,7 +126,7 @@
                     </p>
                     <br></br>
                     <p>Sensor Range: 0 - 120,000lx</p>
-                    <p>Sensor Resolution: &plusmn;0.004lx</p>
+                    <p>Sensor Resolution: &plusmn;0.01lx</p>
                 </div>
             </div>
         </div>
@@ -133,9 +142,6 @@
             animations: {
                 enabled: false,
             },
-            fontFamily: 'Lato, sans-serif',
-            fontWeight: 300,
-            foreColor: '#111',
             toolbar: {
                 show: true,
                 tools: {
@@ -156,12 +162,8 @@
         stroke: {
             curve: 'smooth'
         },
-        grid: {
-            show: false,
-        },
         xaxis: {
-            tickAmount: 'dataPoints',
-            decimalsInFloat: 0,
+            tickAmount: 5,
             axisTicks: {
                 show: true,
             },
@@ -170,22 +172,13 @@
             },
             type: 'numeric',
             title: {
-                text: 'Minutes Elapsed Since Recording Started',
+                text: 'Minutes',
                 style: {
                     fontWeight: 300,
                 },
             },
         },
     };
-
-    function sortFunction(a, b) {
-        if (a[0] === b[0]) {
-            return 0;
-        }
-        else {
-            return (a[0] < b[0]) ? -1 : 1;
-        }
-    }
 
     let charts = []
     charts.push(new ApexCharts(document.querySelector("#chartCO2"), defaultChartOptions));
@@ -198,21 +191,29 @@
     )
     updateData();
 
-    setInterval(updateData, 10000);
+    setInterval(updateData, 30000);
 
     function updateData() {
         fetch('data.json')
             .then(response => response.json())
             .then(response => {
                 response.forEach((dataSeries, index) => {
-                    //console.log(dataSeries.data.sort((a, b) => a[0] - b[0]))
                     dataSeries.data.sort((a, b) => a[0] - b[0])
-                    console.log(dataSeries)
+                    let i = dataSeries.data[32][0]
+                    dataSeries.data.forEach((datapoint) => {
+                       datapoint[0] = datapoint[0] - i
+                    })
                     charts[index].updateSeries([dataSeries])
                     charts[index].updateOptions({ yaxis: { title: { text: dataSeries.y_title, style: { fontWeight: 300 } }, }, })
                 })
             })
     }
+
+    function clearData() {
+            var xhttp = new XMLHttpRequest();
+            xhttp.open("GET", "/clear", true);
+            xhttp.send();
+        }
 
 </script>
 

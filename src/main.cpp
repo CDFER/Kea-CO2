@@ -91,6 +91,9 @@ double humidity = 0;				   // Global humidity
 hw_timer_t *timer = NULL;
 volatile bool writeDataFlag = false;
 
+volatile bool clearDataFlag = false;
+
+void createEmptyJson();
 
 // -----------------------------------------
 //
@@ -113,7 +116,7 @@ volatile bool writeDataFlag = false;
 
 #define PPM_PER_PIXEL ((CO2_MAX - CO2_MIN) / PIXEL_COUNT)
 
-uint8_t globalLedLux = 255;	  // Global 8bit Lux (Max 255lx) (not Locked)
+	uint8_t globalLedLux = 255;	  // Global 8bit Lux (Max 255lx) (not Locked)
 uint16_t globalLedco2 = CO2_MIN;  // Global CO2 Level (not locked)
 
 float mapCO2ToHue(uint16_t ledCO2) {
@@ -263,6 +266,14 @@ void apWebserver(void *parameter) {
 
 	server.serveStatic("/Kea-CO2-Data.csv", SPIFFS, "/Kea-CO2-Data.csv");
 	server.serveStatic("/", SPIFFS, "/").setCacheControl("max-age=120");					  // serve any file on the device when requested
+
+	server.on("/yesclear.html", HTTP_GET, [](AsyncWebServerRequest *request) {	// when client asks for the json data preview file..
+		request->redirect(localIPURL);
+		clearDataFlag = true;
+		createEmptyJson();
+		ESP_LOGI("", "data clear Requested");
+
+	});
 
 	// Required
 	server.on("/connecttest.txt", [](AsyncWebServerRequest *request) { request->redirect("http://logout.net"); });	// windows 11 captive portal workaround
@@ -540,6 +551,7 @@ void addDataToFiles(void *parameter) {
 			} else {
 				if (csvDataFile.print("TimeStamp(Mins),CO2(PPM),Humidity(%RH),Temperature(DegC),Luminance(Lux)\r\n")) {	 // Can I add a header?
 					ESP_LOGW("", "Setup %s with Header", (CSVLogFilename));
+					err = false;
 				} else {
 					ESP_LOGE("", "Error Printing to %s", (CSVLogFilename));
 				}
@@ -557,6 +569,16 @@ void addDataToFiles(void *parameter) {
 
 		while (writeDataFlag == false) {
 			vTaskDelay(50 / portTICK_PERIOD_MS);
+		}
+
+		if (clearDataFlag == true) {
+			clearDataFlag = false;
+			csvDataFile.close();
+			SPIFFS.remove(F(CSVLogFilename));
+			File csvDataFile = SPIFFS.open(F(CSVLogFilename), FILE_APPEND, true);
+			csvDataFile.print("TimeStamp(Mins),CO2(PPM),Humidity(%RH),Temperature(DegC),Luminance(Lux)\r\n");
+			timeStamp = 1;
+			ESP_LOGI("", "%s data cleared", (CSVLogFilename));
 		}
 
 		//----- TimeStamp(Mins) -----------------------
@@ -613,7 +635,6 @@ void addDataToFiles(void *parameter) {
 		vTaskPrioritySet(NULL, 3);  // increase priority so we get out of the way of the webserver Quickly
 		uint32_t writeStart = millis();
 		uint32_t csvDataFilesize = csvDataFile.size();	// must be 32bit (16 bit tops out at 65kb)
-		uint32_t csvDataFilesize = 0;	// must be 32bit (16 bit tops out at 65kb)
 		if (csvDataFilesize < MAX_CSV_SIZE_BYTES) {	 // last line of defense for memory leaks
 			csvDataFile.print(csvLine);
 			csvDataFile.flush();
