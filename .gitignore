@@ -38,3 +38,5 @@
 .clang_complete
 .gcc-flags.json
 .pio
+.vscode/launch.json
+.vscode/c_cpp_properties.json

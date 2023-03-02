@@ -1,0 +1,54 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"array": "cpp",
+			"deque": "cpp",
+			"string": "cpp",
+			"unordered_map": "cpp",
+			"unordered_set": "cpp",
+			"vector": "cpp",
+			"string_view": "cpp",
+			"initializer_list": "cpp",
+			"regex": "cpp",
+			"*.tcc": "cpp"
+		},
+		"cSpell.words": [
+			"ampdu",
+			"colourless",
+			"connecttest",
+			"datapoints",
+			"deque",
+			"GPIO",
+			"hotspot",
+			"IPURL",
+			"IRAM",
+			"Ledco",
+			"leds",
+			"LOGD",
+			"LOGI",
+			"LOGV",
+			"LOGW",
+			"luxf",
+			"millis",
+			"ncsi",
+			"NDIR",
+			"onnotfound",
+			"OSAQS",
+			"photoacoustic",
+			"rawbrightness",
+			"Sensirion",
+			"ssid",
+			"startpage",
+			"VEML",
+			"webserver",
+			"wpad",
+			"Wroom",
+			"yesclear"
+		]
+	}
+}
