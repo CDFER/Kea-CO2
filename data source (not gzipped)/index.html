@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Kea CO2</title>
+    <link rel="stylesheet" href="index.css">
+    <script src="apexcharts.min.js"></script>
+</head>
+<script>
+    function select(element) {
+        document.querySelectorAll('.selected').forEach(e => { e.classList.remove('selected') })
+        element.querySelector('.activeIndicator').classList.add('selected')
+    }
+</script>
+
+<body>
+    <div class="page">
+        <div class="sideBar">
+            <a href="#download">
+                <div class="item" onclick="select(this)">
+                    <div class="activeIndicator selected">
+                        <img class="icon" src="download.svg">
+                    </div>
+                    <div class="label">Download</div>
+                </div>
+            </a>
+            <a href="#CO2">
+                <div class="item" onclick="select(this)">
+                    <div class="activeIndicator">
+                        <img class="icon" src="co2.svg">
+                    </div>
+                    <div class="label">CO2</div>
+                </div>
+            </a>
+            <a href="#Humidity">
+                <div class="item" onclick="select(this)">
+                    <div class="activeIndicator">
+                        <img class="icon" src="humidity.svg">
+                    </div>
+                    <div class="label">Humidity</div>
+                </div>
+            </a>
+            <a href="#Temperature">
+                <div class="item" onclick="select(this)">
+                    <div class="activeIndicator">
+                        <img class="icon" src="temperature.svg">
+                    </div>
+                    <div class="label">Temp</div>
+                </div>
+            </a>
+            <a href="#Light">
+                <div class="item" onclick="select(this)">
+                    <div class="activeIndicator">
+                        <img class="icon" src="light.svg">
+                    </div>
+                    <div class="label">Light</div>
+                </div>
+            </a>
+        </div>
+        <div class="content">
+            <div class="card" id="download">
+                <div class="cardContent" style="padding:16px; ">
+                    <h1>Data</h1>
+                    <p>Download the data as a csv file (Can be imported into Excel or Google Sheets).</p>
+                    <div class="flex-container">
+                        <div class = "flex-box">
+                            <a href="Kea-CO2-Data.csv" download="Kea-CO2-Data.csv">
+                                <div class="cardButton"  style = "background:#355B33;">Download Data</div>
+                            </a>
+                        </div>
+                        <div class = "flex-box">
+                            <a href="clear.html">
+                                <div class="cardButton" style = "background:#5b3c33;">Clear All Data</div>
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="card" id="CO2">
+                <div class="chart" id="chartCO2"></div>
+                <div class="cardContent">
+                    <h1>Carbon Dioxide (CO<sub>2</sub>)</h1>
+                    <p>
+                        CO<sub>2</sub> is a key indicator for indoor air quality as high levels compromise humans’
+                        cognitive performance and well being.
+                        CO<sub>2</sub> is Measured in Parts Per Million (ppm).
+                        The Sensor uses a photoacoustic NDIR sensing principle and features humidity and temperature
+                        compensation.
+                    </p>
+                    <br></br>
+                    <p>Sensor Range: 400 - 40,000ppm</p>
+                    <p>Sensor Accuracy: &plusmn;50ppm (400-2,000ppm)</p>
+                </div>
+            </div>
+            <div class="card" id="Humidity">
+                <div class="chart" id="chartHumidity"></div>
+                <div class="cardContent">
+                    <h1>Humidity</h1>
+                    <p>
+                        Relative humidity (%RH) is a measure of the amount of water in the air.
+                        It is defined as the ratio of the partial pressure of water vapor in air to the saturation vapor
+                        pressure expressed as a percentage
+                    </p>
+                    <br></br>
+                    <p>Sensor Range: 0 - 100%RH</p>
+                    <p>Sensor Accuracy: &plusmn;6%RH</p>
+                </div>
+            </div>
+            <div class="card" id="Temperature">
+                <div class="chart" id="chartTemperature"></div>
+                <div class="cardContent">
+                    <h1>Temperature</h1>
+                    <p>Sensor Range: -10 - 60&deg;C</p>
+                    <p>Sensor Accuracy: &plusmn;0.8&deg;C</p>
+                </div>
+            </div>
+            <div class="card" id="Light">
+                <div class="chart" id="chartLight"></div>
+                <div class="cardContent">
+                    <h1>Light Level</h1>
+                    <p>
+                        Lux (symbol: lx) is the SI unit of illuminance per unit area. It is equal to one lumen per
+                        square metre.
+                        The Sensor features 50 Hz and 60 Hz (Mains Power) flicker noise rejection.
+                    </p>
+                    <br></br>
+                    <p>Sensor Range: 0 - 120,000lx</p>
+                    <p>Sensor Resolution: &plusmn;0.01lx</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+
+<script>
+    var defaultChartOptions = {
+        chart: {
+            type: 'line',
+            decimalsInFloat: 0,
+            height: 350,
+            animations: {
+                enabled: false,
+            },
+            toolbar: {
+                show: true,
+                tools: {
+                    download: '<img class="icon" src="download.svg" width="50">',
+                    selection: false,
+                    zoom: false,
+                    zoomin: false,
+                    zoomout: false,
+                    pan: false,
+                    reset: false,
+                }
+            },
+        },
+        series: [],
+        noData: {
+            text: 'Loading Data...'
+        },
+        stroke: {
+            curve: 'smooth'
+        },
+        xaxis: {
+            tickAmount: 5,
+            axisTicks: {
+                show: true,
+            },
+            axisBorder: {
+                show: true,
+            },
+            type: 'numeric',
+            title: {
+                text: 'Minutes',
+                style: {
+                    fontWeight: 300,
+                },
+            },
+        },
+    };
+
+    let charts = []
+    charts.push(new ApexCharts(document.querySelector("#chartCO2"), defaultChartOptions));
+    charts.push(new ApexCharts(document.querySelector("#chartHumidity"), defaultChartOptions));
+    charts.push(new ApexCharts(document.querySelector("#chartTemperature"), defaultChartOptions));
+    charts.push(new ApexCharts(document.querySelector("#chartLight"), defaultChartOptions));
+
+    charts.forEach(
+        chart => { chart.render() }
+    )
+    updateData();
+
+    setInterval(updateData, 30000);
+
+    function updateData() {
+        fetch('data.json')
+            .then(response => response.json())
+            .then(response => {
+                response.forEach((dataSeries, index) => {
+                    dataSeries.data.sort((a, b) => a[0] - b[0])
+                    let i = dataSeries.data[0][0]
+                    dataSeries.data.forEach((datapoint) => {
+                       datapoint[0] = datapoint[0] - i
+                    })
+                    charts[index].updateSeries([dataSeries])
+                    charts[index].updateOptions({ yaxis: { title: { text: dataSeries.y_title, style: { fontWeight: 300 } }, }, })
+                })
+            })
+    }
+
+    function clearData() {
+            var xhttp = new XMLHttpRequest();
+            xhttp.open("GET", "/clear", true);
+            xhttp.send();
+        }
+
+</script>
+
+</html>
