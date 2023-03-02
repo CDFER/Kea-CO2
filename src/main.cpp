@@ -11,7 +11,7 @@
  * ESP32 Wroom Module
  * Lights up a strip of WS2812B Addressable RGB LEDs to display a scale of the ambient CO2 level
  * CO2 data is from a Sensirion SCD40
- * The LEDs are adjusted depending on the ambient Light data from a VEML7700=
+ * The LEDs are adjusted depending on the ambient Light data from a VEML7700
  * There is also a webserver which displays graphs of CO2, Humidity, Temperature and Lux while also providing a csv download for that data
  *
  * i2c (IO21 -> SDA, IO22 ->SCL) -> SCD40 & VEML7700 (3.3V Power and Data)
