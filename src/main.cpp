@@ -1,11 +1,12 @@
 /*!
  * @file  main.cpp
  * @brief  Kea Studios Open Source Air Quality (CO2) Sensor Firmware
- * @copyright Chris Dirks (http://www.keastudios.co.nz)
+ * @copyright Chris Dirks
  * @license  HIPPOCRATIC LICENSE Version 3.0
  * @author  @CD_FER (Chris Dirks)
  * @created 14/02/2023
- * @url  https://github.com/DFRobot/DFRobot_VEML7700
+ * @url  http://www.keastudios.co.nz
+ *
  *
  * ESP32 Wroom Module
  * Lights up a strip of WS2812B Addressable RGB LEDs to display a scale of the ambient CO2 level
@@ -17,6 +18,9 @@
  * IO2 (3.3V) -> SN74LVC2T45 Level Shifter (5v) -> WS2812B (5v Power and Data)
  * USB C power (5v Rail) -> XC6220B331MR-G -> 3.3V Rail
  */
+
+#define VERSION "V0.1.0-DEV"
+#define USER "CD_FER"  // username to add to the startup serial output
 
 #include <Arduino.h>
 
@@ -48,9 +52,6 @@
 // to store last time data was recorded
 #include <Preferences.h>
 
-#define VERSION "V0.1.0-DEV"
-#define USER "CD_FER"  // username to add to the startup serial output
-
 #define DATA_RECORD_INTERVAL_MINS 1
 
 char CSVLogFilename[] = "/Kea-CO2-Data.csv";  // location of the csv file
@@ -60,12 +61,11 @@ char jsonLogPreview[] = "/data.json";  // name of the file which has the json us
 #define JSON_DATA_POINTS_MAX 32
 #define MIN_JSON_SIZE_BYTES 350	  // tune to empty json size
 #define MAX_JSON_SIZE_BYTES 3000  // tune to number of Data Points (do not forget to leave space for large timestamp)
-// Allocate the JSON document spot in RAM
-// Use https://arduinojson.org/v6/assistant to compute the size.
+// Allocate the JSON document spot in RAM Use https://arduinojson.org/v6/assistant to compute the size.
 DynamicJsonDocument jsonDataDocument(8192);
 
 const char *ssid = "Kea-CO2";  // Name of the Wifi Access Point, FYI The SSID can't have a space in it.
-const char *password = "";	   // Password of the Wifi Access Point, leave blank for no Password
+const char *password = "";	   // Password of the Wifi Access Point, leave as "" for no Password
 
 const IPAddress localIP(4, 3, 2, 1);					// the IP address the webserver, Samsung requires the IP to be in public space
 const IPAddress gatewayIP(4, 3, 2, 1);					// IP address of the network (should be the same as the local IP in most cases)
@@ -79,21 +79,32 @@ const String localIPURL = "http://4.3.2.1/index.html";	// URL to the webserver (
 SemaphoreHandle_t i2cBusSemaphore;	// control which task has access to the i2c port
 
 SemaphoreHandle_t veml7700DataSemaphore;  // control which task (core) has access to the global veml7700Data Variables
-bool veml7700DataValid = false;			  // Global flag if the VEML7700 variables hold valid data
-double Lux;								  // Global floating Lux
+bool veml7700DataValid = false;			  // Global flag set to true if the VEML7700 variables hold valid data
+double Lux;								  // Global Lux
 
 SemaphoreHandle_t scd40DataSemaphore;  // control which task (core) has access to the global scd40 Variables
-bool scd40DataValid = false;		   // Global flag if the SCD40 variables hold valid data
+bool scd40DataValid = false;		   // Global flag true if the SCD40 variables hold valid data
 uint16_t co2 = 0;					   // Global CO2 Level from SCD40 (updates every 5s)
 double temperature = 0;				   // Global temperature
 double humidity = 0;				   // Global humidity
 
 hw_timer_t *timer = NULL;
-volatile bool writeDataFlag = false;
+volatile bool writeDataFlag = false;  // set by timer interrupt and used by addDataToFiles() task to know when to print datapoints to csv
+volatile bool clearDataFlag = false;  // set by webserver and used by addDataToFiles() task to know when to clear the csv
 
-volatile bool clearDataFlag = false;
+uint8_t globalLedLux = 255;	  // Global 8bit Lux (Max 255lx) (not Locked)
+uint16_t globalLedco2 = 280;  // Global CO2 Level (not locked)
 
+// sets global jsonDataDocument to have y axis names and graph colors but with one data point (x = 0, y = null) per graph data array
 void createEmptyJson();
+// round double variable to 1 decimal place
+double roundTo1DP(double value);
+// round double variable to 2 decimal places
+double roundTo2DP(double value);
+// scan all i2c devices and prints results to serial
+void i2cScan();
+// takes 16bit co2 level and returns the hue float (0.0 - 0.3) using the definitions in Addressable LED Config
+float mapCO2ToHue(uint16_t ledCO2);
 
 // -----------------------------------------
 //
@@ -102,33 +113,23 @@ void createEmptyJson();
 // -----------------------------------------
 #define CO2_MAX 2000	 // top of the CO2 Scale (also when it transitions to warning Flash)
 #define CO2_MAX_HUE 0.0	 // top of the Scale (Red Hue)
-#define CO2_MIN 450		 // bottom of the Scale
+#define CO2_MIN 0		 // bottom of the Scale
 #define CO2_MIN_HUE 0.3	 // bottom of the Scale (Green Hue)
 
 #define MIN_USABLE_LUMINANCE 48	 // min Luminance when led's actually turn on
 
-#define PIXEL_COUNT 9
-#define PIXEL_DATA_PIN 2
-#define FRAME_TIME 30  // Milliseconds between frames 30ms = ~33.3fps maximum
+#define PIXEL_COUNT 9	  // Number of Addressable Pixels to write data to (starts at pixel 1)
+#define PIXEL_DATA_PIN 2  // GPIO 2 -> LEVEL SHIFT -> Pixel 1 Data In Pin
+#define FRAME_TIME 30	  // Milliseconds between frames 30ms = ~33.3fps maximum
 
-#define OFF RgbColor(0)
-#define WARNING_COLOR RgbColor(HsbColor(CO2_MAX_HUE, 1.0f, 1.0f))
+#define OFF RgbColor(0)											   // Black no leds on
+#define WARNING_COLOR RgbColor(HsbColor(CO2_MAX_HUE, 1.0f, 1.0f))  // full red
 
-#define PPM_PER_PIXEL ((CO2_MAX - CO2_MIN) / PIXEL_COUNT)
-
-	uint8_t globalLedLux = 255;	  // Global 8bit Lux (Max 255lx) (not Locked)
-uint16_t globalLedco2 = CO2_MIN;  // Global CO2 Level (not locked)
-
-float mapCO2ToHue(uint16_t ledCO2) {
-	return (float)(ledCO2 - (uint16_t)CO2_MIN) * ((float)CO2_MAX_HUE - (float)CO2_MIN_HUE) / (float)((uint16_t)CO2_MAX - (uint16_t)CO2_MIN) + (float)CO2_MIN_HUE;
-}
+#define PPM_PER_PIXEL ((CO2_MAX - CO2_MIN) / PIXEL_COUNT)  // how many parts per million of co2 each pixel represents
 
 void AddressableRGBLeds(void *parameter) {
 	NeoPixelBusLg<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> strip(PIXEL_COUNT, PIXEL_DATA_PIN);	 // uses i2s silicon remapped to any pin to drive led data
 
-	uint16_t ppmDrawn = 0;
-	float hue = CO2_MIN_HUE;
-	uint8_t brightness = 255;
 	uint16_t ledCO2 = CO2_MIN;	// internal co2 which has been smoothed
 	uint8_t ledLux = 0;
 	bool updateLeds = true;
@@ -171,7 +172,7 @@ void AddressableRGBLeds(void *parameter) {
 
 		// Convert globalLedco2 to ledco2 and smooth
 		if (globalLedco2 != ledCO2) {
-			if (ledCO2 > globalLedco2) {
+			if (ledCO2 > globalLedco2 && ledCO2 > CO2_MIN) {
 				ledCO2--;
 			} else {
 				ledCO2++;
@@ -183,11 +184,11 @@ void AddressableRGBLeds(void *parameter) {
 			if (updateLeds) {  // only update leds if co2 has changed
 				updateLeds = false;
 
-				hue = mapCO2ToHue(ledCO2);
+				float hue = mapCO2ToHue(ledCO2);
 
 				// Find Which Pixels are filled with base color, in-between and not lit
-				ppmDrawn = CO2_MIN;		   // ppmDrawn is a counter for how many ppm have been displayed by the previous pixels
-				uint8_t currentPixel = 1;  // starts form first pixel )index = 1
+				uint16_t ppmDrawn = CO2_MIN;  // ppmDrawn is a counter for how many ppm have been displayed by the previous pixels
+				uint8_t currentPixel = 1;	  // starts form first pixel )index = 1
 				while (ppmDrawn <= (ledCO2 - PPM_PER_PIXEL)) {
 					ppmDrawn += PPM_PER_PIXEL;
 					currentPixel++;
@@ -200,7 +201,6 @@ void AddressableRGBLeds(void *parameter) {
 				strip.Show();  // push led data to buffer
 			}
 		} else {
-			brightness = 255;
 			strip.SetLuminance(255);
 
 			do {
@@ -258,21 +258,26 @@ void apWebserver(void *parameter) {
 	// SAFARI (IOS) there is a 128KB limit to the size of the HTML. The HTML can reference external resources/images that bring the total over 128KB
 	// SAFARI (IOS) popup browser has some severe limitations (javascript disabled, cookies disabled)
 
+	server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+		request->redirect(localIPURL);
+	});
+
 	server.on("/data.json", HTTP_GET, [](AsyncWebServerRequest *request) {	// when client asks for the json data preview file..
 		AsyncResponseStream *response = request->beginResponseStream("application/json");
+		response->addHeader("Cache-Control:", "max-age=30");
 		serializeJson(jsonDataDocument, *response);	 // turn the json document in ram into a normal json file (as a stream of data)
 		request->send(response);
 	});
 
-	server.serveStatic("/Kea-CO2-Data.csv", SPIFFS, "/Kea-CO2-Data.csv");
-	server.serveStatic("/", SPIFFS, "/").setCacheControl("max-age=120");					  // serve any file on the device when requested
+	server.serveStatic("/Kea-CO2-Data.csv", SPIFFS, "/Kea-CO2-Data.csv").setCacheControl("no-store");  // do not cache
+
+	server.serveStatic("/", SPIFFS, "/").setCacheControl("max-age=86400");	// serve any file on the device when requested (24hr cache limit)
 
 	server.on("/yesclear.html", HTTP_GET, [](AsyncWebServerRequest *request) {	// when client asks for the json data preview file..
 		request->redirect(localIPURL);
 		clearDataFlag = true;
 		createEmptyJson();
 		ESP_LOGI("", "data clear Requested");
-
 	});
 
 	// Required
@@ -314,43 +319,14 @@ void apWebserver(void *parameter) {
 	}
 }
 
-void i2cScan() {
-	byte error, address;
-	int nDevices;
-	nDevices = 0;
-	for (address = 1; address < 127; address++) {
-		Wire.beginTransmission(address);
-		error = Wire.endTransmission();
-		if (error == 0) {
-			Serial.print("I2C device found at address 0x");
-			if (address < 16) {
-				Serial.print("0");
-			}
-			Serial.println(address, HEX);
-			nDevices++;
-		} else if (error == 4) {
-			Serial.print("Error at address 0x");
-			if (address < 16) {
-				Serial.print("0");
-			}
-			Serial.println(address, HEX);
-		}
-	}
-	if (nDevices == 0) {
-		ESP_LOGE("", "No I2C devices found on Scan");
-	}
-}
-
 void LightSensor(void *parameter) {
 	DFRobot_VEML7700 VEML7700;
-	uint8_t error = 0;
-	float rawLux;
 
 	vTaskDelay(1000 / portTICK_PERIOD_MS);	// make sure co2 goes first
 
 	while (xSemaphoreTake(i2cBusSemaphore, 1) != pdTRUE) {
 		vTaskDelay(1100 / portTICK_PERIOD_MS);
-	};	// infinate loop, check every 1s for access to i2c bus
+	};	// infinite loop, check every 1s for access to i2c bus
 
 	VEML7700.begin();
 	xSemaphoreGive(i2cBusSemaphore);  // release access to i2c bus
@@ -359,7 +335,8 @@ void LightSensor(void *parameter) {
 		while (xSemaphoreTake(i2cBusSemaphore, 1) != pdTRUE) {
 			vTaskDelay(1100 / portTICK_PERIOD_MS);
 		};
-		error = VEML7700.getWhiteLux(rawLux);  // Get the measured ambient white light value
+		float rawLux;
+		uint8_t error = VEML7700.getWhiteLux(rawLux);  // Get the measured ambient white light value
 		xSemaphoreGive(i2cBusSemaphore);
 
 		while (xSemaphoreTake(veml7700DataSemaphore, 1) != pdTRUE) {
@@ -393,11 +370,10 @@ void CO2Sensor(void *parameter) {
 	float temperatureRaw;
 	float humidityRaw;
 	char errorMessage[256];
-	bool isDataReady = false;
 
 	while (xSemaphoreTake(i2cBusSemaphore, 1) != pdTRUE) {
 		vTaskDelay(100 / portTICK_PERIOD_MS);
-	};									   // infinate loop, check every 1s for access to i2c bus
+	};									   // infinite loop, check every 1s for access to i2c bus
 	scd4x.begin(Wire);					   // access i2c bus
 	vTaskDelay(100 / portTICK_PERIOD_MS);  // allow time for boot
 
@@ -422,10 +398,10 @@ void CO2Sensor(void *parameter) {
 
 	while (true) {
 		error = 0;
-		isDataReady = false;
+		bool isDataReady = false;
 		while (xSemaphoreTake(i2cBusSemaphore, 1) != pdTRUE) {
 			vTaskDelay(100 / portTICK_PERIOD_MS);
-		};	// infinate loop, check every 1s for access to i2c bus
+		};	// infinite loop, check every 1s for access to i2c bus
 		do {
 			error = scd4x.getDataReadyFlag(isDataReady);
 			vTaskDelay(30 / portTICK_PERIOD_MS);
@@ -447,7 +423,7 @@ void CO2Sensor(void *parameter) {
 				ESP_LOGW("SCD4x", "readMeasurement(): %s", errorMessage);
 
 			} else {
-				if ((40000 > co2Raw && co2Raw > 400) &&
+				if ((40000 > co2Raw && co2Raw > 280) &&	 // Baseline pre industrial co2 level (as per paris)
 					(100.0f > temperatureRaw && temperatureRaw > (-10.0f)) &&
 					(100.0f > humidityRaw && humidityRaw > 0.0f)) {	 // data is sane
 
@@ -467,62 +443,11 @@ void CO2Sensor(void *parameter) {
 	}
 }
 
-void createEmptyJson() {
-	StaticJsonDocument<768> doc;
-
-	JsonObject doc_0 = doc.createNestedObject();
-	doc_0["name"] = "CO2";
-
-	JsonArray doc_0_data_0 = doc_0["data"].createNestedArray();
-	doc_0_data_0.add(0);
-	doc_0_data_0.add(nullptr);
-	doc_0["color"] = "#70AE6E";
-	doc_0["y_title"] = "CO2 Parts Per Million (PPM)";
-
-	JsonObject doc_1 = doc.createNestedObject();
-	doc_1["name"] = "Humidity";
-
-	JsonArray doc_1_data_0 = doc_1["data"].createNestedArray();
-	doc_1_data_0.add(0);
-	doc_1_data_0.add(nullptr);
-	doc_1["color"] = "#333745";
-	doc_1["y_title"] = "Relative humidity (%RH)";
-
-	JsonObject doc_2 = doc.createNestedObject();
-	doc_2["name"] = "Temperature";
-
-	JsonArray doc_2_data_0 = doc_2["data"].createNestedArray();
-	doc_2_data_0.add(0);
-	doc_2_data_0.add(nullptr);
-	doc_2["color"] = "#FE5F55";
-	doc_2["y_title"] = "Temperature (Deg C)";
-
-	JsonObject doc_3 = doc.createNestedObject();
-	doc_3["name"] = "Light Level";
-
-	JsonArray doc_3_data_0 = doc_3["data"].createNestedArray();
-	doc_3_data_0.add(0);
-	doc_3_data_0.add(nullptr);
-	doc_3["color"] = "#8B6220";
-	doc_3["y_title"] = "Lux (lm/m^2)";
-
-	jsonDataDocument = doc;
-}
-
 void IRAM_ATTR onTimerInterrupt() {
 	writeDataFlag = true;  // set flag for data write during interrupt from timer
 }
 
-double roundTo2DP(double value) {  // rounds a number to 2 decimal places
-	return (int)(value * 100 + 0.5) / 100.0;
-}
-
-double roundTo1DP(double value) {  // rounds a number to 1 decimal place
-	return (int)(value * 10 + 0.5) / 10.0;
-}
-
 void addDataToFiles(void *parameter) {
-
 	timer = timerBegin(0, 80, true);										   // timer_id = 0; divider=80 (80 MHz APB_CLK clock => 1MHz clock); countUp = true;
 	timerAttachInterrupt(timer, &onTimerInterrupt, false);					   // edge = false
 	timerAlarmWrite(timer, (1000000 * 60 * DATA_RECORD_INTERVAL_MINS), true);  // set time in microseconds
@@ -531,26 +456,27 @@ void addDataToFiles(void *parameter) {
 
 	//----- Import TimeStamp  -----
 	Preferences preferences;
-	preferences.begin("time", false);														  // open time namespace on flash storage
+	preferences.begin("time", false);							  // open time namespace on flash storage
 	uint32_t timeStamp = preferences.getInt("lastTimeStamp", 0);  // uint32_t timeStamp in minutes maxes at ~8000years
 	preferences.end();
 
 	//------------- Setup json -----------
 	createEmptyJson();
 	uint8_t jsonIndex = 0;
-	
+
 	//------------- Setup CSV File ----------------
 	uint8_t retryCount = 0;
 	bool err;
 	File csvDataFile = SPIFFS.open(F(CSVLogFilename), FILE_APPEND, true);  // open if exists CSVLogFilename, create if it doesn't
 	do {
 		err = true;
-		if (csvDataFile) {													   // Can I open the file?
-			if (csvDataFile.size() > 25) {									   // does it have stuff in it ?
+		if (csvDataFile) {					// Can I open the file?
+			if (csvDataFile.size() > 25) {	// does it have stuff in it ?
 				err = false;
 			} else {
 				if (csvDataFile.print("TimeStamp(Mins),CO2(PPM),Humidity(%RH),Temperature(DegC),Luminance(Lux)\r\n")) {	 // Can I add a header?
 					ESP_LOGW("", "Setup %s with Header", (CSVLogFilename));
+					timeStamp = 1;
 					err = false;
 				} else {
 					ESP_LOGE("", "Error Printing to %s", (CSVLogFilename));
@@ -571,21 +497,26 @@ void addDataToFiles(void *parameter) {
 			vTaskDelay(50 / portTICK_PERIOD_MS);
 		}
 
+		writeDataFlag = false;	// reset timer interrupt flag
+
 		if (clearDataFlag == true) {
 			clearDataFlag = false;
 			csvDataFile.close();
 			SPIFFS.remove(F(CSVLogFilename));
-			File csvDataFile = SPIFFS.open(F(CSVLogFilename), FILE_APPEND, true);
+			csvDataFile = SPIFFS.open(F(CSVLogFilename), FILE_APPEND, true);
 			csvDataFile.print("TimeStamp(Mins),CO2(PPM),Humidity(%RH),Temperature(DegC),Luminance(Lux)\r\n");
+			csvDataFile.flush();
+			jsonIndex = 0;
 			timeStamp = 1;
 			ESP_LOGI("", "%s data cleared", (CSVLogFilename));
 		}
 
 		//----- TimeStamp(Mins) -----------------------
 		timeStamp += DATA_RECORD_INTERVAL_MINS;
+		preferences.begin("time", false);				 // open time namespace on flash storage
+		preferences.putInt("lastTimeStamp", timeStamp);	 // save new time stamp to storage
+		preferences.end();
 
-		writeDataFlag = false; //reset timer interrupt flag
-		
 		for (size_t i = 0; i < 4; i++) {
 			jsonDataDocument[i]["data"][jsonIndex][0] = timeStamp;	// fill x values in json array
 		}
@@ -630,25 +561,21 @@ void addDataToFiles(void *parameter) {
 
 		//----- Append line to CSV File -----------------
 		char csvLine[32];
-		sprintf(csvLine, "%i,%s,%s\r\n", timeStamp, scd4xf, luxf);	// print atleast 3 characters with 2 decimal place
-		
-		vTaskPrioritySet(NULL, 3);  // increase priority so we get out of the way of the webserver Quickly
+		sprintf(csvLine, "%u,%s,%s\r\n", timeStamp, scd4xf, luxf);	// print atleast 3 characters with 2 decimal place
+
+		vTaskPrioritySet(NULL, 3);	// increase priority so we get out of the way of the webserver Quickly
 		uint32_t writeStart = millis();
 		uint32_t csvDataFilesize = csvDataFile.size();	// must be 32bit (16 bit tops out at 65kb)
-		if (csvDataFilesize < MAX_CSV_SIZE_BYTES) {	 // last line of defense for memory leaks
+		if (csvDataFilesize < MAX_CSV_SIZE_BYTES) {		// last line of defense for memory leaks
 			csvDataFile.print(csvLine);
 			csvDataFile.flush();
 			uint32_t writeEnd = millis();
-			ESP_LOGV("", "Wrote data in %ims, %s is %ikb", (writeEnd - writeStart), CSVLogFilename, (csvDataFilesize / 1000));
+			ESP_LOGV("", "Wrote data in %ums, %s is %ikb", (writeEnd - writeStart), CSVLogFilename, (csvDataFilesize / 1000));
 		} else {
-		 	ESP_LOGE("", "%s is too large", (CSVLogFilename));
+			ESP_LOGE("", "%s is too large", (CSVLogFilename));
 		}
-		vTaskPrioritySet(NULL, 0);  //reset task priority
+		vTaskPrioritySet(NULL, 0);	// reset task priority
 		//-----------------------------------------------
-
-		preferences.begin("time", false);				 // open time namespace on flash storage
-		preferences.putInt("lastTimeStamp", timeStamp);	 // save new time stamp to storage
-		preferences.end();
 
 		jsonIndex = (jsonIndex < JSON_DATA_POINTS_MAX) ? (jsonIndex + 1) : (0);	 // increment from 0 -> JSON_DATA_POINTS_MAX -> 0 -> etc...
 	}
@@ -667,7 +594,7 @@ void setup() {
 		ESP_LOGE("", "Error mounting SPIFFS (Even with Format on Fail)");
 	}
 
-	// Pin to core so there are no collisions when trying to access files on SPIFFS
+	// Pin to core 0 so there are no collisions when trying to access files on SPIFFS
 	xTaskCreatePinnedToCore(apWebserver, "apWebserver", 5000, NULL, 1, NULL, 0);
 	xTaskCreatePinnedToCore(addDataToFiles, "addDataToFiles", 3500, NULL, 1, NULL, 0);
 
@@ -690,4 +617,85 @@ void setup() {
 
 void loop() {
 	vTaskSuspend(NULL);	 // Loop task Not Needed
+}
+
+void createEmptyJson() {
+	StaticJsonDocument<768> doc;
+
+	JsonObject doc_0 = doc.createNestedObject();
+	doc_0["name"] = "CO2";
+
+	JsonArray doc_0_data_0 = doc_0["data"].createNestedArray();
+	doc_0_data_0.add(0);
+	doc_0_data_0.add(nullptr);
+	doc_0["color"] = "#70AE6E";
+	doc_0["y_title"] = "CO2 Parts Per Million (PPM)";
+
+	JsonObject doc_1 = doc.createNestedObject();
+	doc_1["name"] = "Humidity";
+
+	JsonArray doc_1_data_0 = doc_1["data"].createNestedArray();
+	doc_1_data_0.add(0);
+	doc_1_data_0.add(nullptr);
+	doc_1["color"] = "#333745";
+	doc_1["y_title"] = "Relative humidity (%RH)";
+
+	JsonObject doc_2 = doc.createNestedObject();
+	doc_2["name"] = "Temperature";
+
+	JsonArray doc_2_data_0 = doc_2["data"].createNestedArray();
+	doc_2_data_0.add(0);
+	doc_2_data_0.add(nullptr);
+	doc_2["color"] = "#FE5F55";
+	doc_2["y_title"] = "Temperature (Deg C)";
+
+	JsonObject doc_3 = doc.createNestedObject();
+	doc_3["name"] = "Light Level";
+
+	JsonArray doc_3_data_0 = doc_3["data"].createNestedArray();
+	doc_3_data_0.add(0);
+	doc_3_data_0.add(nullptr);
+	doc_3["color"] = "#8B6220";
+	doc_3["y_title"] = "Lux (lm/m^2)";
+
+	jsonDataDocument = doc;
+}
+
+double roundTo2DP(double value) {  // rounds a number to 2 decimal places
+	return (int)(value * 100 + 0.5) / 100.0;
+}
+
+double roundTo1DP(double value) {  // rounds a number to 1 decimal place
+	return (int)(value * 10 + 0.5) / 10.0;
+}
+
+void i2cScan() {
+	byte error, address;
+	int nDevices;
+	nDevices = 0;
+	for (address = 1; address < 127; address++) {
+		Wire.beginTransmission(address);
+		error = Wire.endTransmission();
+		if (error == 0) {
+			Serial.print("I2C device found at address 0x");
+			if (address < 16) {
+				Serial.print("0");
+			}
+			Serial.println(address, HEX);
+			nDevices++;
+		} else if (error == 4) {
+			Serial.print("Error at address 0x");
+			if (address < 16) {
+				Serial.print("0");
+			}
+			Serial.println(address, HEX);
+		}
+	}
+	if (nDevices == 0) {
+		ESP_LOGE("", "No I2C devices found on Scan");
+	}
+}
+
+float mapCO2ToHue(uint16_t ledCO2) {
+	return (float)(ledCO2 - (uint16_t)CO2_MIN) * ((float)CO2_MAX_HUE - (float)CO2_MIN_HUE) / (float)((uint16_t)CO2_MAX - (uint16_t)CO2_MIN) + (float)CO2_MIN_HUE;
 }

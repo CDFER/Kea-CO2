@@ -21,14 +21,19 @@
 			"ampdu",
 			"colourless",
 			"connecttest",
+			"datapoints",
 			"deque",
+			"GPIO",
 			"hotspot",
 			"IPURL",
+			"IRAM",
+			"Ledco",
 			"leds",
 			"LOGD",
 			"LOGI",
 			"LOGV",
 			"LOGW",
+			"luxf",
 			"millis",
 			"ncsi",
 			"NDIR",
@@ -42,7 +47,8 @@
 			"VEML",
 			"webserver",
 			"wpad",
-			"Wroom"
+			"Wroom",
+			"yesclear"
 		]
 	}
 }
