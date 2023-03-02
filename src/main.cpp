@@ -19,8 +19,8 @@
  * USB C power (5v Rail) -> XC6220B331MR-G -> 3.3V Rail
  */
 
-#define VERSION "V0.1.0-DEV"
-#define USER "CD_FER"  // username to add to the startup serial output
+#define VERSION "V0.1.0"
+#define USER "Unknown"  // username to add to the startup serial output
 
 #include <Arduino.h>
 
