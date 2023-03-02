@@ -75,7 +75,7 @@ Flash: [========= ]  85.9% (used 879213 bytes from 1024000 bytes)
 - Putty for Standalone Serial Logger
 
 ### Wiring
-![Schematic](/images/schematic.png)
+![Schematic](/images/Schematic.png)
 ESP32 Wroom Module
  - Lights up a strip of WS2812B Addressable RGB LEDs to display a scale of the ambient CO2 level
  - CO2 data is from a Sensirion SCD40
