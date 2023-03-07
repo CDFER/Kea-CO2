@@ -5,7 +5,7 @@
  * @license  HIPPOCRATIC LICENSE Version 3.0
  * @author  @CD_FER (Chris Dirks)
  * @created 14/02/2023
- * @url  http://www.keastudios.co.nz
+ * @url  https://www.keastudios.co.nz
  *
  *
  * ESP32 Wroom Module
@@ -57,7 +57,6 @@
 char CSVLogFilename[] = "/Kea-CO2-Data.csv";  // location of the csv file
 #define MAX_CSV_SIZE_BYTES 1000000			  // set max size at 1mb
 
-char jsonLogPreview[] = "/data.json";  // name of the file which has the json used for the graphs
 #define JSON_DATA_POINTS_MAX 32
 #define MIN_JSON_SIZE_BYTES 350	  // tune to empty json size
 #define MAX_JSON_SIZE_BYTES 3000  // tune to number of Data Points (do not forget to leave space for large timestamp)
@@ -180,27 +179,26 @@ void AddressableRGBLeds(void *parameter) {
 			updateLeds = true;
 		}
 
-		if (ledCO2 < CO2_MAX) {
+		if (ledCO2 < CO2_MAX) { // below CO2 threshold
 			if (updateLeds) {  // only update leds if co2 has changed
 				updateLeds = false;
 
-				float hue = mapCO2ToHue(ledCO2);
-
-				// Find Which Pixels are filled with base color, in-between and not lit
+				// Find which pixels are filled with base color, in-between and not lit
 				uint16_t ppmDrawn = CO2_MIN;  // ppmDrawn is a counter for how many ppm have been displayed by the previous pixels
-				uint8_t currentPixel = 1;	  // starts form first pixel )index = 1
+				uint8_t currentPixel = 1;	  // starts form first pixel, index = 1
 				while (ppmDrawn <= (ledCO2 - PPM_PER_PIXEL)) {
 					ppmDrawn += PPM_PER_PIXEL;
 					currentPixel++;
 				}
 
-				strip.ClearTo(HsbColor(hue, 1.0f, 1.0f), 0, currentPixel - 1);												// apply base color to first few pixels
+				float hue = mapCO2ToHue(ledCO2);
+				strip.ClearTo(HsbColor(hue, 1.0f, 1.0f), 0, currentPixel - 1);									// apply base color to first few pixels
 				strip.SetPixelColor(currentPixel, HsbColor(hue, 1.0f, (float(ledCO2 - ppmDrawn) / float(PPM_PER_PIXEL))));	// apply the in-between color mix for the in-between pixel
 				strip.ClearTo(OFF, currentPixel + 1, PIXEL_COUNT);															// apply black to the last few leds
 
 				strip.Show();  // push led data to buffer
 			}
-		} else {
+		} else { // above CO2 Threshold
 			strip.SetLuminance(255);
 
 			do {
@@ -220,11 +218,12 @@ void AddressableRGBLeds(void *parameter) {
 	}
 }
 
-void apWebserver(void *parameter) {
+//=================================================================
 #define DNS_INTERVAL 30	 // ms between processing dns requests: dnsServer.processNextRequest();
-
 #define MAX_CLIENTS 4
 #define WIFI_CHANNEL 6	// 2.4ghz channel 6
+
+void apWebserver(void *parameter) {
 
 	const IPAddress subnetMask(255, 255, 255, 0);
 
@@ -236,7 +235,7 @@ void apWebserver(void *parameter) {
 	WiFi.softAP(ssid, password, WIFI_CHANNEL, 0, MAX_CLIENTS);
 	// WiFi.setSleep(false);
 
-	dnsServer.setTTL(300);				// set 5min client side cache for DNS
+	dnsServer.setTTL(3600);				// set 60 min client side cache for DNS
 	dnsServer.start(53, "*", localIP);	// if DNSServer is started with "*" for domain name, it will reply with provided IP to all DNS request
 
 	// ampdu_rx_disable android workaround see https://github.com/espressif/arduino-esp32/issues/4423
@@ -244,10 +243,10 @@ void apWebserver(void *parameter) {
 	esp_wifi_deinit();
 
 	wifi_init_config_t my_config = WIFI_INIT_CONFIG_DEFAULT();	// We use the default config ...
-	my_config.ampdu_rx_enable = false;							//... and modify only what we want.
+	my_config.ampdu_rx_enable = false;													//... and modify only what we want.
 
-	esp_wifi_init(&my_config);			   // set the new config
-	esp_wifi_start();					   // Restart WiFi
+	esp_wifi_init(&my_config);			   	// set the new config
+	esp_wifi_start();					   				// Restart WiFi
 	vTaskDelay(100 / portTICK_PERIOD_MS);  // this is necessary don't ask me why
 
 	// ESP_LOGV("apWebserver", "Startup complete by %ims", (millis()));
@@ -280,7 +279,7 @@ void apWebserver(void *parameter) {
 		ESP_LOGI("", "data clear Requested");
 	});
 
-	// Required
+	// Required for captive portal redirects
 	server.on("/connecttest.txt", [](AsyncWebServerRequest *request) { request->redirect("http://logout.net"); });	// windows 11 captive portal workaround
 	server.on("/wpad.dat", [](AsyncWebServerRequest *request) { request->send(404); });								// Honestly don't understand what this is but a 404 stops win 10 keep calling this repeatedly and panicking the esp32 :)
 	server.on("/favicon.ico", [](AsyncWebServerRequest *request) { request->send(404); });
@@ -319,6 +318,8 @@ void apWebserver(void *parameter) {
 	}
 }
 
+//==========================================================
+
 void LightSensor(void *parameter) {
 	DFRobot_VEML7700 VEML7700;
 
@@ -326,7 +327,7 @@ void LightSensor(void *parameter) {
 
 	while (xSemaphoreTake(i2cBusSemaphore, 1) != pdTRUE) {
 		vTaskDelay(1100 / portTICK_PERIOD_MS);
-	};	// infinite loop, check every 1s for access to i2c bus
+	};	// wait until you have access to the i2c bus, checks every 1.1s 
 
 	VEML7700.begin();
 	xSemaphoreGive(i2cBusSemaphore);  // release access to i2c bus
@@ -344,7 +345,7 @@ void LightSensor(void *parameter) {
 		};
 		veml7700DataValid = false;
 		if (!error) {
-			if (rawLux < 120000.00f && rawLux >= 0.00f) {
+			if (rawLux >= 0.00f && rawLux < 120000.00f) {
 				veml7700DataValid = true;
 
 				Lux = rawLux;
@@ -355,12 +356,14 @@ void LightSensor(void *parameter) {
 				}
 			}
 		} else {
-			ESP_LOGW("VEML7700", "getAutoWhiteLux(): ERROR");
+			ESP_LOGW("VEML7700", "getWhiteLux(): ERROR");
 		}
-		xSemaphoreGive(veml7700DataSemaphore);
+		xSemaphoreGive( veml7700DataSemaphore );
 		vTaskDelay(5000 / portTICK_PERIOD_MS);
 	}
 }
+
+//===================================================
 
 void CO2Sensor(void *parameter) {
 	SensirionI2CScd4x scd4x;
@@ -373,23 +376,23 @@ void CO2Sensor(void *parameter) {
 
 	while (xSemaphoreTake(i2cBusSemaphore, 1) != pdTRUE) {
 		vTaskDelay(100 / portTICK_PERIOD_MS);
-	};									   // infinite loop, check every 1s for access to i2c bus
+	};									   // wait for i2c access, check every 1s for access to i2c bus
 	scd4x.begin(Wire);					   // access i2c bus
 	vTaskDelay(100 / portTICK_PERIOD_MS);  // allow time for boot
 
 	error = scd4x.startPeriodicMeasurement();
-	if (error) {
+	if (error) { // start error
 		// errorToString(error, errorMessage, 256);
 		// ESP_LOGW("SCD4x", "startPeriodicMeasurement(): %s", errorMessage);
 
 		error = scd4x.stopPeriodicMeasurement();
-		if (error) {
+		if (error) {  // stop error
 			errorToString(error, errorMessage, 256);
 			ESP_LOGE("SCD4x", "stopPeriodicMeasurement(): %s", errorMessage);
 			i2cScan();
 		}
 		error = scd4x.startPeriodicMeasurement();
-		if (error) {
+		if (error) { // start error
 			errorToString(error, errorMessage, 256);
 			ESP_LOGW("SCD4x", "startPeriodicMeasurement(): %s", errorMessage);
 		}
@@ -401,7 +404,7 @@ void CO2Sensor(void *parameter) {
 		bool isDataReady = false;
 		while (xSemaphoreTake(i2cBusSemaphore, 1) != pdTRUE) {
 			vTaskDelay(100 / portTICK_PERIOD_MS);
-		};	// infinite loop, check every 1s for access to i2c bus
+		};	// infinite loop ===> it realy isn't an infite loop!!, check every 1s for access to i2c bus
 		do {
 			error = scd4x.getDataReadyFlag(isDataReady);
 			vTaskDelay(30 / portTICK_PERIOD_MS);
@@ -423,16 +426,16 @@ void CO2Sensor(void *parameter) {
 				ESP_LOGW("SCD4x", "readMeasurement(): %s", errorMessage);
 
 			} else {
-				if ((40000 > co2Raw && co2Raw > 280) &&	 // Baseline pre industrial co2 level (as per paris)
-					(100.0f > temperatureRaw && temperatureRaw > (-10.0f)) &&
-					(100.0f > humidityRaw && humidityRaw > 0.0f)) {	 // data is sane
-
+				if (
+					40000 > co2Raw && co2Raw > 280 &&	 // Baseline pre industrial co2 level (as per paris)
+					100.0f > temperatureRaw && temperatureRaw > (-10.0f) &&
+					100.0f > humidityRaw && humidityRaw > 0.0f
+				){	 // data is within acceptable limits
 					co2 = co2Raw;
 					globalLedco2 = co2Raw;
 					temperature = (double)temperatureRaw;
 					humidity = (double)humidityRaw;
 					scd40DataValid = true;
-
 				} else {
 					ESP_LOGW("SCD4x", "Out of Range co2:%i temp:%f humidity:%f", co2Raw, temperatureRaw, humidityRaw);
 				}
