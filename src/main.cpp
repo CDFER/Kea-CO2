@@ -19,8 +19,8 @@
  * USB C power (5v Rail) -> XC6220B331MR-G -> 3.3V Rail
  */
 
-#define VERSION "V0.1.0"
-#define USER "Unknown"  // username to add to the startup serial output
+#define VERSION "V0.1.1"
+#define USER "CD_FER"  // username to add to the startup serial output
 
 #include <Arduino.h>
 
@@ -87,13 +87,14 @@ bool scd40DataValid = false;		   // Global flag true if the SCD40 variables hold
 uint16_t co2 = 0;					   // Global CO2 Level from SCD40 (updates every 5s)
 double temperature = 0;				   // Global temperature
 double humidity = 0;				   // Global humidity
+#define TEMP_OFFSET 6.4		 		   // The Enclosure runs a bit hot reduce to get a more accurate ambient
 
 hw_timer_t *timer = NULL;
 volatile bool writeDataFlag = false;  // set by timer interrupt and used by addDataToFiles() task to know when to print datapoints to csv
 volatile bool clearDataFlag = false;  // set by webserver and used by addDataToFiles() task to know when to clear the csv
 
-uint8_t globalLedLux = 255;	  // Global 8bit Lux (Max 255lx) (not Locked)
-uint16_t globalLedco2 = 280;  // Global CO2 Level (not locked)
+uint8_t globalLedLux = 255;	  // Global 8bit Lux (Max 127lx) (not Locked)
+uint16_t globalLedco2 = 450;  // Global CO2 Level (not locked)
 
 // sets global jsonDataDocument to have y axis names and graph colors but with one data point (x = 0, y = null) per graph data array
 void createEmptyJson();
@@ -113,10 +114,11 @@ float mapCO2ToHue(uint16_t ledCO2);
 // -----------------------------------------
 #define CO2_MAX 2000	 // top of the CO2 Scale (also when it transitions to warning Flash)
 #define CO2_MAX_HUE 0.0	 // top of the Scale (Red Hue)
-#define CO2_MIN 0		 // bottom of the Scale
+#define CO2_MIN 450		 // bottom of the Scale
 #define CO2_MIN_HUE 0.3	 // bottom of the Scale (Green Hue)
 
-#define MIN_USABLE_LUMINANCE 48	 // min Luminance when led's actually turn on
+#define LED_OFF_LUX 250
+#define LED_ON_LUX 5
 
 #define PIXEL_COUNT 9	  // Number of Addressable Pixels to write data to (starts at pixel 1)
 #define PIXEL_DATA_PIN 2  // GPIO 2 -> LEVEL SHIFT -> Pixel 1 Data In Pin
@@ -131,7 +133,9 @@ void AddressableRGBLeds(void *parameter) {
 	NeoPixelBusLg<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> strip(PIXEL_COUNT, PIXEL_DATA_PIN);	 // uses i2s silicon remapped to any pin to drive led data
 
 	uint16_t ledCO2 = CO2_MIN;	// internal co2 which has been smoothed
-	uint8_t ledLux = 0;
+	uint8_t ledLux = globalLedLux;
+	uint8_t currentBrightness = 127;
+	uint8_t targetBrightness = 255;
 	bool updateLeds = true;
 
 	strip.Begin();
@@ -155,19 +159,23 @@ void AddressableRGBLeds(void *parameter) {
 
 	while (true) {
 		// Convert Lux to Luminance and smooth
-		if (ledLux != globalLedLux) {
-			if (ledLux > globalLedLux) {
-				ledLux--;
-			} else {
-				ledLux++;
-			}
-
-			if (ledLux < MIN_USABLE_LUMINANCE && ledLux > 0) {
-				strip.SetLuminance(MIN_USABLE_LUMINANCE);
-			} else {
-				strip.SetLuminance(ledLux);	 // Luminance is a gamma corrected Brightness
+		if (currentBrightness != targetBrightness) {
+			if (currentBrightness < targetBrightness) {
+				currentBrightness++;
+				strip.SetLuminance(currentBrightness);	// Luminance is a gamma corrected Brightness
+			} else if (currentBrightness > targetBrightness) {
+				currentBrightness--;
+				strip.SetLuminance(currentBrightness);	// Luminance is a gamma corrected Brightness
 			}
 			updateLeds = true;	// SetLuminance does NOT affect current pixel data, therefore we must force Redraw of LEDs
+		} else if (ledLux != globalLedLux) {
+			ledLux = globalLedLux;
+
+			if (globalLedLux > LED_ON_LUX && targetBrightness < 255) {
+				targetBrightness = 255;
+			} else if (globalLedLux < LED_OFF_LUX && targetBrightness > 0) {
+				targetBrightness = 0;
+			}
 		}
 
 		// Convert globalLedco2 to ledco2 and smooth
@@ -217,7 +225,7 @@ void AddressableRGBLeds(void *parameter) {
 			vTaskDelay(1000 / portTICK_PERIOD_MS);
 		}
 		vTaskDelay(FRAME_TIME / portTICK_PERIOD_MS);  // time between frames
-	}
+		}
 }
 
 void apWebserver(void *parameter) {
@@ -234,7 +242,6 @@ void apWebserver(void *parameter) {
 	WiFi.mode(WIFI_AP);
 	WiFi.softAPConfig(localIP, gatewayIP, subnetMask);	// Samsung requires the IP to be in public space
 	WiFi.softAP(ssid, password, WIFI_CHANNEL, 0, MAX_CLIENTS);
-	// WiFi.setSleep(false);
 
 	dnsServer.setTTL(300);				// set 5min client side cache for DNS
 	dnsServer.start(53, "*", localIP);	// if DNSServer is started with "*" for domain name, it will reply with provided IP to all DNS request
@@ -250,7 +257,6 @@ void apWebserver(void *parameter) {
 	esp_wifi_start();					   // Restart WiFi
 	vTaskDelay(100 / portTICK_PERIOD_MS);  // this is necessary don't ask me why
 
-	// ESP_LOGV("apWebserver", "Startup complete by %ims", (millis()));
 
 	//======================== Webserver ========================
 	// WARNING IOS (and maybe macos) WILL NOT POP UP IF IT CONTAINS THE WORD "Success" https://www.esp8266.com/viewtopic.php?f=34&t=4398
@@ -311,6 +317,9 @@ void apWebserver(void *parameter) {
 
 	server.begin();
 
+	WiFi.setTxPower(WIFI_POWER_2dBm);
+	ESP_LOGV("WiFi Tx Power Set To:", "%i", (WiFi.getTxPower()));
+
 	ESP_LOGV("", "Startup complete by %ims", (millis()));
 
 	while (true) {
@@ -322,21 +331,26 @@ void apWebserver(void *parameter) {
 void LightSensor(void *parameter) {
 	DFRobot_VEML7700 VEML7700;
 
-	vTaskDelay(1000 / portTICK_PERIOD_MS);	// make sure co2 goes first
+	vTaskDelay(10000 / portTICK_PERIOD_MS);	// make sure co2 goes first
 
 	while (xSemaphoreTake(i2cBusSemaphore, 1) != pdTRUE) {
 		vTaskDelay(1100 / portTICK_PERIOD_MS);
 	};	// infinite loop, check every 1s for access to i2c bus
 
 	VEML7700.begin();
+	VEML7700.setGain(VEML7700.ALS_GAIN_x2);
+	VEML7700.setIntegrationTime(VEML7700.ALS_INTEGRATION_800ms);
+	VEML7700.setPowerSaving(false);
 	xSemaphoreGive(i2cBusSemaphore);  // release access to i2c bus
+
+	vTaskDelay(2000 / portTICK_PERIOD_MS);	 // give time to settle before reading
 
 	while (true) {
 		while (xSemaphoreTake(i2cBusSemaphore, 1) != pdTRUE) {
 			vTaskDelay(1100 / portTICK_PERIOD_MS);
 		};
 		float rawLux;
-		uint8_t error = VEML7700.getWhiteLux(rawLux);  // Get the measured ambient white light value
+		uint8_t error = VEML7700.getALSLux(rawLux);  // Get the measured ambient light value
 		xSemaphoreGive(i2cBusSemaphore);
 
 		while (xSemaphoreTake(veml7700DataSemaphore, 1) != pdTRUE) {
@@ -358,7 +372,7 @@ void LightSensor(void *parameter) {
 			ESP_LOGW("VEML7700", "getAutoWhiteLux(): ERROR");
 		}
 		xSemaphoreGive(veml7700DataSemaphore);
-		vTaskDelay(5000 / portTICK_PERIOD_MS);
+		vTaskDelay(10000 / portTICK_PERIOD_MS); //only update every 10s
 	}
 }
 
@@ -429,7 +443,7 @@ void CO2Sensor(void *parameter) {
 
 					co2 = co2Raw;
 					globalLedco2 = co2Raw;
-					temperature = (double)temperatureRaw;
+					temperature = (double)temperatureRaw - TEMP_OFFSET;
 					humidity = (double)humidityRaw;
 					scd40DataValid = true;
 
