@@ -19,9 +19,6 @@
  * USB C power (5v Rail) -> XC6220B331MR-G -> 3.3V Rail
  */
 
-#define VERSION "V0.1.1"
-#define USER "CD_FER"  // username to add to the startup serial output
-
 #include <Arduino.h>
 
 // Wifi, Webserver and DNS
@@ -87,7 +84,7 @@ bool scd40DataValid = false;		   // Global flag true if the SCD40 variables hold
 uint16_t co2 = 0;					   // Global CO2 Level from SCD40 (updates every 5s)
 double temperature = 0;				   // Global temperature
 double humidity = 0;				   // Global humidity
-#define TEMP_OFFSET 6.4		 		   // The Enclosure runs a bit hot reduce to get a more accurate ambient
+#define TEMP_OFFSET 6.4				   // The Enclosure runs a bit hot reduce to get a more accurate ambient
 
 hw_timer_t *timer = NULL;
 volatile bool writeDataFlag = false;  // set by timer interrupt and used by addDataToFiles() task to know when to print datapoints to csv
@@ -225,7 +222,7 @@ void AddressableRGBLeds(void *parameter) {
 			vTaskDelay(1000 / portTICK_PERIOD_MS);
 		}
 		vTaskDelay(FRAME_TIME / portTICK_PERIOD_MS);  // time between frames
-		}
+	}
 }
 
 void apWebserver(void *parameter) {
@@ -256,7 +253,6 @@ void apWebserver(void *parameter) {
 	esp_wifi_init(&my_config);			   // set the new config
 	esp_wifi_start();					   // Restart WiFi
 	vTaskDelay(100 / portTICK_PERIOD_MS);  // this is necessary don't ask me why
-
 
 	//======================== Webserver ========================
 	// WARNING IOS (and maybe macos) WILL NOT POP UP IF IT CONTAINS THE WORD "Success" https://www.esp8266.com/viewtopic.php?f=34&t=4398
@@ -331,10 +327,10 @@ void apWebserver(void *parameter) {
 void LightSensor(void *parameter) {
 	DFRobot_VEML7700 VEML7700;
 
-	vTaskDelay(10000 / portTICK_PERIOD_MS);	// make sure co2 goes first
+	vTaskDelay(5000 / portTICK_PERIOD_MS);	// make sure co2 goes first
 
 	while (xSemaphoreTake(i2cBusSemaphore, 1) != pdTRUE) {
-		vTaskDelay(1100 / portTICK_PERIOD_MS);
+		vTaskDelay(240 / portTICK_PERIOD_MS);
 	};	// infinite loop, check every 1s for access to i2c bus
 
 	VEML7700.begin();
@@ -343,18 +339,18 @@ void LightSensor(void *parameter) {
 	VEML7700.setPowerSaving(false);
 	xSemaphoreGive(i2cBusSemaphore);  // release access to i2c bus
 
-	vTaskDelay(2000 / portTICK_PERIOD_MS);	 // give time to settle before reading
+	vTaskDelay(1100 / portTICK_PERIOD_MS);	// give time to settle before reading
 
 	while (true) {
 		while (xSemaphoreTake(i2cBusSemaphore, 1) != pdTRUE) {
-			vTaskDelay(1100 / portTICK_PERIOD_MS);
+			vTaskDelay(230 / portTICK_PERIOD_MS);
 		};
 		float rawLux;
-		uint8_t error = VEML7700.getALSLux(rawLux);  // Get the measured ambient light value
+		uint8_t error = VEML7700.getALSLux(rawLux);	 // Get the measured ambient light value
 		xSemaphoreGive(i2cBusSemaphore);
 
 		while (xSemaphoreTake(veml7700DataSemaphore, 1) != pdTRUE) {
-			vTaskDelay(900 / portTICK_PERIOD_MS);
+			vTaskDelay(60 / portTICK_PERIOD_MS);
 		};
 		veml7700DataValid = false;
 		if (!error) {
@@ -367,12 +363,15 @@ void LightSensor(void *parameter) {
 				} else {
 					globalLedLux = int(rawLux);
 				}
+			} else {
+				ESP_LOGW("VEML7700", "Out of Range");
 			}
+
 		} else {
 			ESP_LOGW("VEML7700", "getAutoWhiteLux(): ERROR");
 		}
 		xSemaphoreGive(veml7700DataSemaphore);
-		vTaskDelay(10000 / portTICK_PERIOD_MS); //only update every 10s
+		vTaskDelay(10000 / portTICK_PERIOD_MS);	 // only update every 10s
 	}
 }
 
@@ -405,7 +404,7 @@ void CO2Sensor(void *parameter) {
 		error = scd4x.startPeriodicMeasurement();
 		if (error) {
 			errorToString(error, errorMessage, 256);
-			ESP_LOGW("SCD4x", "startPeriodicMeasurement(): %s", errorMessage);
+			ESP_LOGE("SCD4x", "startPeriodicMeasurement(): %s", errorMessage);
 		}
 	}
 	xSemaphoreGive(i2cBusSemaphore);
@@ -427,14 +426,14 @@ void CO2Sensor(void *parameter) {
 		scd40DataValid = false;
 		if (error) {
 			errorToString(error, errorMessage, 256);
-			ESP_LOGW("SCD4x", "getDataReadyFlag(): %s", errorMessage);
+			ESP_LOGE("SCD4x", "getDataReadyFlag(): %s", errorMessage);
 
 		} else {
 			error = scd4x.readMeasurement(co2Raw, temperatureRaw, humidityRaw);
 			xSemaphoreGive(i2cBusSemaphore);
 			if (error) {
 				errorToString(error, errorMessage, 256);
-				ESP_LOGW("SCD4x", "readMeasurement(): %s", errorMessage);
+				ESP_LOGE("SCD4x", "readMeasurement(): %s", errorMessage);
 
 			} else {
 				if ((40000 > co2Raw && co2Raw > 280) &&	 // Baseline pre industrial co2 level (as per paris)
@@ -488,9 +487,10 @@ void addDataToFiles(void *parameter) {
 			if (csvDataFile.size() > 25) {	// does it have stuff in it ?
 				err = false;
 			} else {
+				ESP_LOGE("", "%s too small", (CSVLogFilename));
 				if (csvDataFile.print("TimeStamp(Mins),CO2(PPM),Humidity(%RH),Temperature(DegC),Luminance(Lux)\r\n")) {	 // Can I add a header?
-					ESP_LOGW("", "Setup %s with Header", (CSVLogFilename));
-					timeStamp = 1;
+					ESP_LOGI("", "Setup %s with Header", (CSVLogFilename));
+					timeStamp = 0;
 					err = false;
 				} else {
 					ESP_LOGE("", "Error Printing to %s", (CSVLogFilename));
@@ -503,13 +503,16 @@ void addDataToFiles(void *parameter) {
 		retryCount++;
 	} while (retryCount < 5 && err == true);
 
+	vTaskDelay(10000 / portTICK_PERIOD_MS);
+
 	while (true) {
-		// don't waste cpu time while also accounting for ~1s to add data to files and ~0.5s RTOS inaccuracy
+		//don't waste cpu time while also accounting for ~1s to add data to files and ~0.5s RTOS inaccuracy
 		vTaskDelay(((1000 * 60 * DATA_RECORD_INTERVAL_MINS) - 1500) / portTICK_PERIOD_MS);
 
 		while (writeDataFlag == false) {
 			vTaskDelay(50 / portTICK_PERIOD_MS);
 		}
+
 
 		writeDataFlag = false;	// reset timer interrupt flag
 
@@ -521,7 +524,7 @@ void addDataToFiles(void *parameter) {
 			csvDataFile.print("TimeStamp(Mins),CO2(PPM),Humidity(%RH),Temperature(DegC),Luminance(Lux)\r\n");
 			csvDataFile.flush();
 			jsonIndex = 0;
-			timeStamp = 1;
+			timeStamp = 0;
 			ESP_LOGI("", "%s data cleared", (CSVLogFilename));
 		}
 
@@ -577,18 +580,31 @@ void addDataToFiles(void *parameter) {
 		char csvLine[32];
 		sprintf(csvLine, "%u,%s,%s\r\n", timeStamp, scd4xf, luxf);	// print atleast 3 characters with 2 decimal place
 
-		vTaskPrioritySet(NULL, 3);	// increase priority so we get out of the way of the webserver Quickly
-		uint32_t writeStart = millis();
 		uint32_t csvDataFilesize = csvDataFile.size();	// must be 32bit (16 bit tops out at 65kb)
-		if (csvDataFilesize < MAX_CSV_SIZE_BYTES) {		// last line of defense for memory leaks
-			csvDataFile.print(csvLine);
-			csvDataFile.flush();
-			uint32_t writeEnd = millis();
-			ESP_LOGV("", "Wrote data in %ums, %s is %ikb", (writeEnd - writeStart), CSVLogFilename, (csvDataFilesize / 1000));
-		} else {
+		if (csvDataFilesize < MAX_CSV_SIZE_BYTES) {  // last line of defense for memory leaks
+
+			vTaskPrioritySet(NULL, configMAX_PRIORITIES - 1);  // increase priority so we get out of the way of the webserver Quickly
+			uint32_t writeStart = millis();
+			if (csvDataFile.print(csvLine)) {
+				csvDataFile.flush();
+				uint32_t writeEnd = millis();
+				vTaskPrioritySet(NULL, 0);	// reset task priority
+
+				if ((writeEnd - writeStart)>30) {
+					ESP_LOGW("", "Wrote data in ~%ums, %s is %ikb", (writeEnd - writeStart), CSVLogFilename, (csvDataFilesize / 1000));
+				}else
+				{
+					ESP_LOGV("", "Wrote data in ~%ums, %s is %ikb", (writeEnd - writeStart), CSVLogFilename, (csvDataFilesize / 1000));
+				}
+				
+			} else {
+				vTaskPrioritySet(NULL, 0);	// reset task priority
+				ESP_LOGE("", "Error Printing to %s", (CSVLogFilename));
+			}
+		}
+		else {
 			ESP_LOGE("", "%s is too large", (CSVLogFilename));
 		}
-		vTaskPrioritySet(NULL, 0);	// reset task priority
 		//-----------------------------------------------
 
 		jsonIndex = (jsonIndex < JSON_DATA_POINTS_MAX) ? (jsonIndex + 1) : (0);	 // increment from 0 -> JSON_DATA_POINTS_MAX -> 0 -> etc...
@@ -600,7 +616,7 @@ void setup() {
 	Serial.begin(115200);
 	while (!Serial)
 		;
-	ESP_LOGI("Kea Studios OSAQS (Kea CO2)", "%s Compiled on " __DATE__ " at " __TIME__ " by %s", VERSION, USER);
+	Serial.printf("\r\n Kea CO2 \r\n %s compiled on " __DATE__ " at " __TIME__ " \r\n %s%s in the %s environment \r\n\r\n", USER, VERSION, TAG, ENV);
 
 	if (SPIFFS.begin(true)) {  // Initialize SPIFFS (ESP32 SPI Flash Storage) and format on fail
 		ESP_LOGV("", "FS init by %ims", millis());
