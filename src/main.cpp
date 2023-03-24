@@ -32,7 +32,7 @@
 #include "ESPAsyncWebServer.h"
 
 // Onboard Flash Storage
-#include <SPIFFS.h>
+#include <LittleFS.h>
 
 // Addressable LEDs
 #include <NeoPixelBusLg.h>	// instead of NeoPixelBus.h (has Luminace and Gamma as default)
@@ -41,13 +41,31 @@
 #include <Wire.h>
 
 // VEML7700 (LUX)
-#include <DFRobot_VEML7700.h>
+// #include <DFRobot_VEML7700.h>
 
 // SCD40/41 (CO2)
-#include <SensirionI2CScd4x.h>
+#include <scd4x.h>
 
 // to store last time data was recorded
 #include <Preferences.h>
+
+// I2C Back Up Clock (RTC)
+#include "pcf8563.h"
+#include "sntp.h"
+#include "time.h"
+
+// -----------------------------------------
+//
+//    Hardware Settings
+//
+// -----------------------------------------
+#define WIRE_SDA_PIN 21
+#define WIRE_SCL_PIN 22
+#define WIRE1_SDA_PIN 33
+#define WIRE1_SCL_PIN 32
+#define PIXEL_COUNT 11	   // Number of Addressable Pixels to write data to (starts at pixel 1)
+#define PIXEL_DATA_PIN 16  // GPIO -> LEVEL SHIFT -> Pixel 1 Data In Pin
+
 
 #define DATA_RECORD_INTERVAL_MINS 1
 
@@ -81,7 +99,7 @@ double Lux;								  // Global Lux
 
 SemaphoreHandle_t scd40DataSemaphore;  // control which task (core) has access to the global scd40 Variables
 bool scd40DataValid = false;		   // Global flag true if the SCD40 variables hold valid data
-uint16_t co2 = 0;					   // Global CO2 Level from SCD40 (updates every 5s)
+//double co2 = 0;						   // Global CO2 Level from SCD40 (updates every 5s)
 double temperature = 0;				   // Global temperature
 double humidity = 0;				   // Global humidity
 #define TEMP_OFFSET 6.4				   // The Enclosure runs a bit hot reduce to get a more accurate ambient
@@ -89,20 +107,23 @@ double humidity = 0;				   // Global humidity
 hw_timer_t *timer = NULL;
 volatile bool writeDataFlag = false;  // set by timer interrupt and used by addDataToFiles() task to know when to print datapoints to csv
 volatile bool clearDataFlag = false;  // set by webserver and used by addDataToFiles() task to know when to clear the csv
+volatile bool dataFullFlag = false;
 
 uint8_t globalLedLux = 255;	  // Global 8bit Lux (Max 127lx) (not Locked)
 uint16_t globalLedco2 = 450;  // Global CO2 Level (not locked)
 
+
+QueueHandle_t predictedCO2Queue;
+TaskHandle_t lightBar = NULL;
+
 // sets global jsonDataDocument to have y axis names and graph colors but with one data point (x = 0, y = null) per graph data array
-void createEmptyJson();
+void 	createEmptyJson();
 // round double variable to 1 decimal place
 double roundTo1DP(double value);
 // round double variable to 2 decimal places
 double roundTo2DP(double value);
 // scan all i2c devices and prints results to serial
-void i2cScan();
-// takes 16bit co2 level and returns the hue float (0.0 - 0.3) using the definitions in Addressable LED Config
-float mapCO2ToHue(uint16_t ledCO2);
+void i2cScan(TwoWire &i2cBus);
 
 // -----------------------------------------
 //
@@ -117,23 +138,32 @@ float mapCO2ToHue(uint16_t ledCO2);
 #define LED_OFF_LUX 250
 #define LED_ON_LUX 5
 
-#define PIXEL_COUNT 9	  // Number of Addressable Pixels to write data to (starts at pixel 1)
-#define PIXEL_DATA_PIN 2  // GPIO 2 -> LEVEL SHIFT -> Pixel 1 Data In Pin
-#define FRAME_TIME 30	  // Milliseconds between frames 30ms = ~33.3fps maximum
+#define FRAME_TIME 30	   // Milliseconds between frames 30ms = ~33.3fps maximum
+#define SCD4x_TIME 5000	   // Milliseconds between updates
 
 #define OFF RgbColor(0)											   // Black no leds on
 #define WARNING_COLOR RgbColor(HsbColor(CO2_MAX_HUE, 1.0f, 1.0f))  // full red
 
 #define PPM_PER_PIXEL ((CO2_MAX - CO2_MIN) / PIXEL_COUNT)  // how many parts per million of co2 each pixel represents
 
+float mapCO2toHue(float inputCO2) {
+	return (float)((inputCO2 - (float)CO2_MIN) * ((float)CO2_MAX_HUE - (float)CO2_MIN_HUE) / (float)(CO2_MAX - (float)CO2_MIN) + (float)CO2_MIN_HUE);
+}
+
+float mapCO2toPosition(float inputCO2) {
+	return (float)((inputCO2 - (float)CO2_MIN) / (float)(CO2_MAX - (float)CO2_MIN));
+}
+
 void AddressableRGBLeds(void *parameter) {
 	NeoPixelBusLg<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> strip(PIXEL_COUNT, PIXEL_DATA_PIN);	 // uses i2s silicon remapped to any pin to drive led data
 
-	uint16_t ledCO2 = CO2_MIN;	// internal co2 which has been smoothed
 	uint8_t ledLux = globalLedLux;
 	uint8_t currentBrightness = 127;
 	uint8_t targetBrightness = 255;
 	bool updateLeds = true;
+
+	float predictedCO2 = 0, 	ledCO2 = 0, 	smoothPredictedCO2 = 0;
+	uint32_t syncCO2;
 
 	strip.Begin();
 	strip.Show();  // init to black
@@ -156,71 +186,72 @@ void AddressableRGBLeds(void *parameter) {
 
 	while (true) {
 		// Convert Lux to Luminance and smooth
-		if (currentBrightness != targetBrightness) {
-			if (currentBrightness < targetBrightness) {
-				currentBrightness++;
-				strip.SetLuminance(currentBrightness);	// Luminance is a gamma corrected Brightness
-			} else if (currentBrightness > targetBrightness) {
-				currentBrightness--;
-				strip.SetLuminance(currentBrightness);	// Luminance is a gamma corrected Brightness
-			}
-			updateLeds = true;	// SetLuminance does NOT affect current pixel data, therefore we must force Redraw of LEDs
-		} else if (ledLux != globalLedLux) {
-			ledLux = globalLedLux;
+		// if (currentBrightness != targetBrightness) {
+		// 	if (currentBrightness < targetBrightness) {
+		// 		currentBrightness++;
+		// 		strip.SetLuminance(currentBrightness);	// Luminance is a gamma corrected Brightness
+		// 	} else if (currentBrightness > targetBrightness) {
+		// 		currentBrightness--;
+		// 		strip.SetLuminance(currentBrightness);	// Luminance is a gamma corrected Brightness
+		// 	}
+		// 	updateLeds = true;	// SetLuminance does NOT affect current pixel data, therefore we must force Redraw of LEDs
+		// } else if (ledLux != globalLedLux) {
+		// 	ledLux = globalLedLux;
 
-			if (globalLedLux > LED_ON_LUX && targetBrightness < 255) {
-				targetBrightness = 255;
-			} else if (globalLedLux < LED_OFF_LUX && targetBrightness > 0) {
-				targetBrightness = 0;
-			}
-		}
+		// 	if (globalLedLux > LED_ON_LUX && targetBrightness < 255) {
+		// 		targetBrightness = 255;
+		// 	} else if (globalLedLux < LED_OFF_LUX && targetBrightness > 0) {
+		// 		targetBrightness = 0;
+		// 	}
+		// }
 
 		// Convert globalLedco2 to ledco2 and smooth
-		if (globalLedco2 != ledCO2) {
-			if (ledCO2 > globalLedco2 && ledCO2 > CO2_MIN) {
-				ledCO2--;
-			} else {
-				ledCO2++;
-			}
-			updateLeds = true;
+		// if (globalLedco2 != ledCO2) {
+		// 	if (ledCO2 > globalLedco2 && ledCO2 > CO2_MIN) {
+		// 		ledCO2--;
+		// 	} else {
+		// 		ledCO2++;
+		// 	}
+		// 	updateLeds = true;
+		// }
+		xTaskNotifyWait(0, 1, &syncCO2, 0);
+
+		if (syncCO2 == true) {
+			xQueueReceive(predictedCO2Queue, &predictedCO2, 0);
 		}
 
-		if (ledCO2 < CO2_MAX) {
-			if (updateLeds) {  // only update leds if co2 has changed
-				updateLeds = false;
+		smoothPredictedCO2 = smoothPredictedCO2 + (predictedCO2 - smoothPredictedCO2) / (SCD4x_TIME/FRAME_TIME);
+		ledCO2 = ledCO2 + (smoothPredictedCO2 - ledCO2) / (SCD4x_TIME / FRAME_TIME);
 
-				float hue = mapCO2ToHue(ledCO2);
+		//if (outputCO2 < CO2_MAX) {
+		float position = mapCO2toPosition(ledCO2);
+		uint8_t mixingPixel = (int)(position * PIXEL_COUNT);
+		float mixingPixelBrightness = (position * PIXEL_COUNT) - mixingPixel;
+		float hue = mapCO2toHue(ledCO2);
 
-				// Find Which Pixels are filled with base color, in-between and not lit
-				uint16_t ppmDrawn = CO2_MIN;  // ppmDrawn is a counter for how many ppm have been displayed by the previous pixels
-				uint8_t currentPixel = 1;	  // starts form first pixel )index = 1
-				while (ppmDrawn <= (ledCO2 - PPM_PER_PIXEL)) {
-					ppmDrawn += PPM_PER_PIXEL;
-					currentPixel++;
-				}
+		strip.ClearTo(OFF);
+		strip.ClearTo(HsbColor(hue, 1.0f, 1.0f), 0, mixingPixel);				 // apply base color to first few pixels
+		strip.SetPixelColor(mixingPixel+1, HsbColor(hue, 1.0f, mixingPixelBrightness));  // apply the in-between color mix for the in-between pixel
 
-				strip.ClearTo(HsbColor(hue, 1.0f, 1.0f), 0, currentPixel - 1);												// apply base color to first few pixels
-				strip.SetPixelColor(currentPixel, HsbColor(hue, 1.0f, (float(ledCO2 - ppmDrawn) / float(PPM_PER_PIXEL))));	// apply the in-between color mix for the in-between pixel
-				strip.ClearTo(OFF, currentPixel + 1, PIXEL_COUNT);															// apply black to the last few leds
+		strip.Show();									  // push led data to buffer
+		//vTaskDelay(FRAME_TIME * 3 / portTICK_PERIOD_MS);  // don't waste cpu time
 
-				strip.Show();  // push led data to buffer
-			}
-		} else {
-			strip.SetLuminance(255);
+		// } else {
+		// 	strip.SetLuminance(255);
 
-			do {
-				strip.ClearTo(OFF);
-				strip.Show();
-				vTaskDelay(1000 / portTICK_PERIOD_MS);
-				strip.ClearTo(WARNING_COLOR);
-				strip.Show();
-				vTaskDelay(1000 / portTICK_PERIOD_MS);
-			} while (co2 > CO2_MAX);
-			ledCO2 = co2;  // ledCo2 will have not been updated during CO2 waring Flash
-			strip.ClearTo(OFF);
-			strip.Show();
-			vTaskDelay(1000 / portTICK_PERIOD_MS);
-		}
+		// 	do {
+		// 		strip.ClearTo(OFF);
+		// 		strip.Show();
+		// 		vTaskDelay(1000 / portTICK_PERIOD_MS);
+		// 		strip.ClearTo(WARNING_COLOR);
+		// 		strip.Show();
+		// 		vTaskDelay(1000 / portTICK_PERIOD_MS);
+		// 	} while (co2 > CO2_MAX);
+		// 	ledCO2 = co2;  // ledCo2 will have not been updated during CO2 waring Flash
+		// 	strip.ClearTo(OFF);
+		// 	strip.Show();
+		// 	vTaskDelay(1000 / portTICK_PERIOD_MS);
+		// }
 		vTaskDelay(FRAME_TIME / portTICK_PERIOD_MS);  // time between frames
 	}
 }
@@ -271,9 +302,7 @@ void apWebserver(void *parameter) {
 		request->send(response);
 	});
 
-	server.serveStatic("/Kea-CO2-Data.csv", SPIFFS, "/Kea-CO2-Data.csv").setCacheControl("no-store");  // do not cache
-
-	server.serveStatic("/", SPIFFS, "/").setCacheControl("max-age=86400");	// serve any file on the device when requested (24hr cache limit)
+	server.serveStatic("/Kea-CO2-Data.csv", LittleFS, "/Kea-CO2-Data.csv").setCacheControl("no-store");	 // do not cache
 
 	server.on("/yesclear.html", HTTP_GET, [](AsyncWebServerRequest *request) {	// when client asks for the json data preview file..
 		request->redirect(localIPURL);
@@ -296,11 +325,13 @@ void apWebserver(void *parameter) {
 	server.on("/success.txt", [](AsyncWebServerRequest *request) { request->send(200); });					   // firefox captive portal call home
 	server.on("/ncsi.txt", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });			   // windows call home
 
+	server.serveStatic("/", LittleFS, "/").setCacheControl("max-age=86400");  // serve any file on the device when requested (24hr cache limit)
+
 	// B Tier (uncommon)
-	server.on("/chrome-variations/seed", [](AsyncWebServerRequest *request) { request->send(200); });  // chrome captive portal call home
-	server.on("/service/update2/json", [](AsyncWebServerRequest *request) { request->send(200); });	   // firefox?
-	server.on("/chat", [](AsyncWebServerRequest *request) { request->send(404); });					   // No stop asking Whatsapp, there is no internet connection
-	server.on("/startpage", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });
+	// server.on("/chrome-variations/seed", [](AsyncWebServerRequest *request) { request->send(200); });  // chrome captive portal call home
+	// server.on("/service/update2/json", [](AsyncWebServerRequest *request) { request->send(200); });	   // firefox?
+	// server.on("/chat", [](AsyncWebServerRequest *request) { request->send(404); });					   // No stop asking Whatsapp, there is no internet connection
+	// server.on("/startpage", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });
 
 	server.onNotFound([](AsyncWebServerRequest *request) {
 		request->redirect(localIPURL);
@@ -324,142 +355,10 @@ void apWebserver(void *parameter) {
 	}
 }
 
-void LightSensor(void *parameter) {
-	DFRobot_VEML7700 VEML7700;
-
-	vTaskDelay(5000 / portTICK_PERIOD_MS);	// make sure co2 goes first
-
-	while (xSemaphoreTake(i2cBusSemaphore, 1) != pdTRUE) {
-		vTaskDelay(240 / portTICK_PERIOD_MS);
-	};	// infinite loop, check every 1s for access to i2c bus
-
-	VEML7700.begin();
-	VEML7700.setGain(VEML7700.ALS_GAIN_x2);
-	VEML7700.setIntegrationTime(VEML7700.ALS_INTEGRATION_800ms);
-	VEML7700.setPowerSaving(false);
-	xSemaphoreGive(i2cBusSemaphore);  // release access to i2c bus
-
-	vTaskDelay(1100 / portTICK_PERIOD_MS);	// give time to settle before reading
-
-	while (true) {
-		while (xSemaphoreTake(i2cBusSemaphore, 1) != pdTRUE) {
-			vTaskDelay(230 / portTICK_PERIOD_MS);
-		};
-		float rawLux;
-		uint8_t error = VEML7700.getALSLux(rawLux);	 // Get the measured ambient light value
-		xSemaphoreGive(i2cBusSemaphore);
-
-		while (xSemaphoreTake(veml7700DataSemaphore, 1) != pdTRUE) {
-			vTaskDelay(60 / portTICK_PERIOD_MS);
-		};
-		veml7700DataValid = false;
-		if (!error) {
-			if (rawLux < 120000.00f && rawLux >= 0.00f) {
-				veml7700DataValid = true;
-
-				Lux = rawLux;
-				if (rawLux > 255.0f) {	// overflow protection for 8bit int
-					globalLedLux = 255;
-				} else {
-					globalLedLux = int(rawLux);
-				}
-			} else {
-				ESP_LOGW("VEML7700", "Out of Range");
-			}
-
-		} else {
-			ESP_LOGW("VEML7700", "getAutoWhiteLux(): ERROR");
-		}
-		xSemaphoreGive(veml7700DataSemaphore);
-		vTaskDelay(10000 / portTICK_PERIOD_MS);	 // only update every 10s
-	}
-}
-
-void CO2Sensor(void *parameter) {
-	SensirionI2CScd4x scd4x;
-
-	uint16_t error;
-	uint16_t co2Raw;
-	float temperatureRaw;
-	float humidityRaw;
-	char errorMessage[256];
-
-	while (xSemaphoreTake(i2cBusSemaphore, 1) != pdTRUE) {
-		vTaskDelay(100 / portTICK_PERIOD_MS);
-	};									   // infinite loop, check every 1s for access to i2c bus
-	scd4x.begin(Wire);					   // access i2c bus
-	vTaskDelay(100 / portTICK_PERIOD_MS);  // allow time for boot
-
-	error = scd4x.startPeriodicMeasurement();
-	if (error) {
-		// errorToString(error, errorMessage, 256);
-		// ESP_LOGW("SCD4x", "startPeriodicMeasurement(): %s", errorMessage);
-
-		error = scd4x.stopPeriodicMeasurement();
-		if (error) {
-			errorToString(error, errorMessage, 256);
-			ESP_LOGE("SCD4x", "stopPeriodicMeasurement(): %s", errorMessage);
-			i2cScan();
-		}
-		error = scd4x.startPeriodicMeasurement();
-		if (error) {
-			errorToString(error, errorMessage, 256);
-			ESP_LOGE("SCD4x", "startPeriodicMeasurement(): %s", errorMessage);
-		}
-	}
-	xSemaphoreGive(i2cBusSemaphore);
-
-	while (true) {
-		error = 0;
-		bool isDataReady = false;
-		while (xSemaphoreTake(i2cBusSemaphore, 1) != pdTRUE) {
-			vTaskDelay(100 / portTICK_PERIOD_MS);
-		};	// infinite loop, check every 1s for access to i2c bus
-		do {
-			error = scd4x.getDataReadyFlag(isDataReady);
-			vTaskDelay(30 / portTICK_PERIOD_MS);
-		} while (isDataReady == false);
-
-		while (xSemaphoreTake(scd40DataSemaphore, 1) != pdTRUE) {
-			vTaskDelay(1000 / portTICK_PERIOD_MS);
-		};
-		scd40DataValid = false;
-		if (error) {
-			errorToString(error, errorMessage, 256);
-			ESP_LOGE("SCD4x", "getDataReadyFlag(): %s", errorMessage);
-
-		} else {
-			error = scd4x.readMeasurement(co2Raw, temperatureRaw, humidityRaw);
-			xSemaphoreGive(i2cBusSemaphore);
-			if (error) {
-				errorToString(error, errorMessage, 256);
-				ESP_LOGE("SCD4x", "readMeasurement(): %s", errorMessage);
-
-			} else {
-				if ((40000 > co2Raw && co2Raw > 280) &&	 // Baseline pre industrial co2 level (as per paris)
-					(100.0f > temperatureRaw && temperatureRaw > (-10.0f)) &&
-					(100.0f > humidityRaw && humidityRaw > 0.0f)) {	 // data is sane
-
-					co2 = co2Raw;
-					globalLedco2 = co2Raw;
-					temperature = (double)temperatureRaw - TEMP_OFFSET;
-					humidity = (double)humidityRaw;
-					scd40DataValid = true;
-
-				} else {
-					ESP_LOGW("SCD4x", "Out of Range co2:%i temp:%f humidity:%f", co2Raw, temperatureRaw, humidityRaw);
-				}
-			}
-		}
-		xSemaphoreGive(scd40DataSemaphore);
-		vTaskDelay(4750 / portTICK_PERIOD_MS);	// about 5s between readings, don't waste cpu time
-	}
-}
-
 void IRAM_ATTR onTimerInterrupt() {
 	writeDataFlag = true;  // set flag for data write during interrupt from timer
 }
-
+/* 
 void addDataToFiles(void *parameter) {
 	timer = timerBegin(0, 80, true);										   // timer_id = 0; divider=80 (80 MHz APB_CLK clock => 1MHz clock); countUp = true;
 	timerAttachInterrupt(timer, &onTimerInterrupt, false);					   // edge = false
@@ -480,7 +379,7 @@ void addDataToFiles(void *parameter) {
 	//------------- Setup CSV File ----------------
 	uint8_t retryCount = 0;
 	bool err;
-	File csvDataFile = SPIFFS.open(F(CSVLogFilename), FILE_APPEND, true);  // open if exists CSVLogFilename, create if it doesn't
+	File csvDataFile = LittleFS.open(F(CSVLogFilename), FILE_APPEND, true);	 // open if exists CSVLogFilename, create if it doesn't
 	do {
 		err = true;
 		if (csvDataFile) {					// Can I open the file?
@@ -503,26 +402,19 @@ void addDataToFiles(void *parameter) {
 		retryCount++;
 	} while (retryCount < 5 && err == true);
 
-	vTaskDelay(10000 / portTICK_PERIOD_MS);
+	while (scd40DataValid == false || veml7700DataValid == false) {	 // wait until valid data is available
+		vTaskDelay(100 / portTICK_PERIOD_MS);
+	}
 
 	while (true) {
-		//don't waste cpu time while also accounting for ~1s to add data to files and ~0.5s RTOS inaccuracy
-		vTaskDelay(((1000 * 60 * DATA_RECORD_INTERVAL_MINS) - 1500) / portTICK_PERIOD_MS);
-
-		while (writeDataFlag == false) {
-			vTaskDelay(50 / portTICK_PERIOD_MS);
-		}
-
-
-		writeDataFlag = false;	// reset timer interrupt flag
-
 		if (clearDataFlag == true) {
 			clearDataFlag = false;
 			csvDataFile.close();
-			SPIFFS.remove(F(CSVLogFilename));
-			csvDataFile = SPIFFS.open(F(CSVLogFilename), FILE_APPEND, true);
+			LittleFS.remove(F(CSVLogFilename));
+			csvDataFile = LittleFS.open(F(CSVLogFilename), FILE_APPEND, true);
 			csvDataFile.print("TimeStamp(Mins),CO2(PPM),Humidity(%RH),Temperature(DegC),Luminance(Lux)\r\n");
 			csvDataFile.flush();
+			dataFullFlag = false;
 			jsonIndex = 0;
 			timeStamp = 0;
 			ESP_LOGI("", "%s data cleared", (CSVLogFilename));
@@ -577,37 +469,193 @@ void addDataToFiles(void *parameter) {
 		//-----------------------------------------------
 
 		//----- Append line to CSV File -----------------
-		char csvLine[32];
-		sprintf(csvLine, "%u,%s,%s\r\n", timeStamp, scd4xf, luxf);	// print atleast 3 characters with 2 decimal place
+		if (dataFullFlag == false) {
+			char csvLine[32];
+			sprintf(csvLine, "%u,%s,%s\r\n", timeStamp, scd4xf, luxf);	// print atleast 3 characters with 2 decimal place
 
-		uint32_t csvDataFilesize = csvDataFile.size();	// must be 32bit (16 bit tops out at 65kb)
-		if (csvDataFilesize < MAX_CSV_SIZE_BYTES) {  // last line of defense for memory leaks
+			uint32_t csvDataFilesize = csvDataFile.size();	// must be 32bit (16 bit tops out at 65kb)
+			if (csvDataFilesize < MAX_CSV_SIZE_BYTES) {		// last line of defense for memory leaks
 
-			vTaskPrioritySet(NULL, configMAX_PRIORITIES - 1);  // increase priority so we get out of the way of the webserver Quickly
-			uint32_t writeStart = millis();
-			if (csvDataFile.print(csvLine)) {
-				csvDataFile.flush();
-				uint32_t writeEnd = millis();
-				vTaskPrioritySet(NULL, 0);	// reset task priority
+				vTaskPrioritySet(NULL, configMAX_PRIORITIES - 1);  // increase priority so we get out of the way of the webserver Quickly
+				uint32_t writeStart = millis();
+				if (csvDataFile.print(csvLine)) {
+					csvDataFile.flush();
+					uint32_t writeEnd = millis();
+					vTaskPrioritySet(NULL, 0);	// reset task priority
 
-				if ((writeEnd - writeStart)>30) {
-					ESP_LOGW("", "Wrote data in ~%ums, %s is %ikb", (writeEnd - writeStart), CSVLogFilename, (csvDataFilesize / 1000));
-				}else
-				{
-					ESP_LOGV("", "Wrote data in ~%ums, %s is %ikb", (writeEnd - writeStart), CSVLogFilename, (csvDataFilesize / 1000));
+					// if ((writeEnd - writeStart)>100) {
+					// 	ESP_LOGW("", "Wrote data in ~%ums, %s is %ikb", (writeEnd - writeStart), CSVLogFilename, (csvDataFilesize / 1000));
+					// }else
+					// {
+					// 	ESP_LOGV("", "Wrote data in ~%ums, %s is %ikb", (writeEnd - writeStart), CSVLogFilename, (csvDataFilesize / 1000));
+					// }
+					Serial.println((writeEnd - writeStart));
+
+				} else {
+					vTaskPrioritySet(NULL, 0);	// reset task priority
+					ESP_LOGE("", "Error Printing to %s", (CSVLogFilename));
 				}
-				
 			} else {
-				vTaskPrioritySet(NULL, 0);	// reset task priority
-				ESP_LOGE("", "Error Printing to %s", (CSVLogFilename));
+				ESP_LOGE("", "%s is too large", (CSVLogFilename));
+				dataFullFlag = true;
 			}
-		}
-		else {
-			ESP_LOGE("", "%s is too large", (CSVLogFilename));
 		}
 		//-----------------------------------------------
 
 		jsonIndex = (jsonIndex < JSON_DATA_POINTS_MAX) ? (jsonIndex + 1) : (0);	 // increment from 0 -> JSON_DATA_POINTS_MAX -> 0 -> etc...
+
+		// don't waste cpu time while also accounting for ~1s to add data to files and ~0.5s RTOS inaccuracy
+		// vTaskDelay(((1000 * 60 * DATA_RECORD_INTERVAL_MINS) - 1500) / portTICK_PERIOD_MS);
+
+		// while (writeDataFlag == false) {
+		// 	vTaskDelay(50 / portTICK_PERIOD_MS);
+		// }
+		// writeDataFlag = false;	// reset timer interrupt flag
+
+		// vTaskDelay(10 / portTICK_PERIOD_MS);
+	}
+}
+ */
+void syncWifiTimeToRTC(PCF8563_Class &rtc, const char *ssid, const char *password) {
+	const char *ntpServer1 = "pool.ntp.org";
+	const char *ntpServer2 = "time.nist.gov";
+	const char *ntpServer3 = "time.google.com";
+
+	sntp_setoperatingmode(SNTP_OPMODE_POLL);
+	sntp_setservername(0, (char *)ntpServer1);
+	sntp_setservername(1, (char *)ntpServer2);
+	sntp_setservername(2, (char *)ntpServer3);
+	sntp_init();
+
+	// connect to WiFi
+	Serial.printf("Connecting to %s ", ssid);
+	WiFi.begin(ssid, password);
+	uint8_t retryCount = 0;
+	while (WiFi.status() != WL_CONNECTED && retryCount <20) {
+		vTaskDelay(100 / portTICK_PERIOD_MS);
+		retryCount++;
+	}
+
+	if (WiFi.status() == WL_CONNECTED) {
+		Serial.println(" CONNECTED");
+
+		struct tm timeinfo;
+		time_t now;
+		while (getLocalTime(&timeinfo) == false) {
+			Serial.println("Waiting for NTP");
+			vTaskDelay(950 / portTICK_PERIOD_MS);
+		}
+		rtc.syncToRtc();
+	} else {
+		Serial.println("Wifi Connect Failed");
+	}
+}
+
+void sensorsAndData(void *parameter) {
+	PCF8563_Class rtc;
+	scd4x scd4x;
+
+	//const int16_t SCD_ADDRESS = 0x62;
+	const char *time_zone = "NZST-12NZDT,M9.5.0,M4.1.0/3";	// https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv
+
+	Wire.begin(WIRE_SDA_PIN, WIRE_SCL_PIN, 100000);
+	rtc.begin(Wire);
+	scd4x.begin(Wire);
+
+	setenv("TZ", time_zone, 1);
+	tzset();
+
+	rtc.syncToSystem();
+
+	// Wire.beginTransmission(SCD_ADDRESS);
+	// Wire.write(0x21);
+	// Wire.write(0xb1);
+	// Wire.endTransmission();
+
+	// const char *ssid = "Nest";
+	// const char *password = "sL&WeEnJs33F";
+	// syncWifiTimeToRTC(rtc, ssid, password);
+	// setenv("TZ", time_zone, 1);
+	// tzset();
+
+	struct tm timeinfo;
+	double CO2 = 0, temperature = 0, humidity = 0;
+	double prevCO2 = 0, trendCO2 = 0;
+	float predictedCO2 = 0;
+
+	while (true) {
+		scd4x.isDataReady();
+		
+		if (scd4x.readMeasurement(CO2, temperature, humidity) == 0) {
+			trendCO2 = 0.5 * (CO2 - prevCO2) + (1 - 0.5) * trendCO2;
+			predictedCO2 = (float)((CO2) + trendCO2);
+			prevCO2 = CO2;
+
+			xQueueOverwrite(predictedCO2Queue, (void *)&predictedCO2);
+			xTaskNotify(lightBar, true, eSetValueWithOverwrite);
+
+			getLocalTime(&timeinfo);
+			char timeBuf[64];
+			size_t written = strftime(timeBuf, 64, "%d/%m/%y,%H:%M:%S", &timeinfo);
+
+			Serial.printf("%s,%4.0f,%2.1f,%1.0f\n", timeBuf, CO2, temperature, humidity);
+		}
+
+		// send read data command
+		// Wire.beginTransmission(SCD_ADDRESS);
+		// Wire.write(0xec);
+		// Wire.write(0x05);
+		// if (Wire.endTransmission(true) == 0) {
+		// 	// read measurement data: 2 bytes co2, 1 byte CRC,
+		// 	// 2 bytes T, 1 byte CRC, 2 bytes RH, 1 byte CRC,
+		// 	// 2 bytes sensor status, 1 byte CRC
+		// 	// stop reading after bytesRequested (12 bytes)
+
+		// 	uint8_t bytesReceived = Wire.requestFrom(SCD_ADDRESS, bytesRequested);
+		// 	if (bytesReceived == bytesRequested) {	// If received requested amount of bytes than zero bytes
+		// 		uint8_t data[bytesReceived];
+		// 		Wire.readBytes(data, bytesReceived);
+
+		// 		// floating point conversion
+		// 		CO2 = (double)((uint16_t)data[0] << 8 | data[1]);
+		// 		// convert T in degC
+		// 		rawTemperature = -45 + 175 * (double)((uint16_t)data[3] << 8 | data[4]) / 65536;
+		// 		// convert RH in %
+		// 		rawHumidity = 100 * (double)((uint16_t)data[6] << 8 | data[7]) / 65536;
+
+		// 		getLocalTime(&timeinfo);
+
+		// 		trendCO2 = 0.5 * (CO2 - prevCO2) + (1 - 0.5) * trendCO2;
+		// 		predictedCO2 = (float)((CO2) + trendCO2);
+		// 		prevCO2 = CO2;
+
+		// 		//Serial.println(predictedCO2);
+		// 		xQueueOverwrite(predictedCO2Queue, (void *)&predictedCO2);
+		// 		xTaskNotify(lightBar, true, eSetValueWithOverwrite);
+
+		// 		char timeBuf[64];
+		// 		size_t written = strftime(timeBuf, 64, "%d/%m/%y,%H:%M:%S", &timeinfo);
+
+		// 		//Serial.print(&timeinfo, "%d/%m/%y %H:%M:%S");
+		// 		//Serial.printf("%s,%4.0f,%2.1f,%1.0f\n", timeBuf, rawCO2, rawTemperature, rawHumidity);
+		// 	} else {
+		// 		ESP_LOGE("SCD4x CO2", "I2C bytesReceived(%i) != bytesRequested(%i)", bytesReceived, bytesRequested);
+		// 	}
+		// } else {
+		// 	ESP_LOGE("SCD4x CO2", "I2C Wire.endTransmission");
+		// }
+
+		// for (size_t i = 0; i < 50; i++)
+		// {
+		// 	uint32_t calcStart = millis();
+		// 	smoothPredictedCO2 = smoothPredictedCO2 + (predictedCO2 - smoothPredictedCO2) / 25;
+		// 	outputCO2 = outputCO2 + (smoothPredictedCO2 - outputCO2) / 25;
+		// 	uint32_t calcEnd = millis();
+		// 	//ESP_LOGV("", "%f calc in ~%ums", outputCO2, (calcStart - calcEnd));
+		// 	// Serial.printf("%4.2f,%4.2f,%4.2f,%4.2f\n", CO2, predictedCO2, smoothPredictedCO2, outputCO2);
+		// 	vTaskDelay(100 / portTICK_PERIOD_MS);
+		// }
+		vTaskDelay(5000 / portTICK_PERIOD_MS);
 	}
 }
 
@@ -618,35 +666,37 @@ void setup() {
 		;
 	Serial.printf("\r\n Kea CO2 \r\n %s compiled on " __DATE__ " at " __TIME__ " \r\n %s%s in the %s environment \r\n\r\n", USER, VERSION, TAG, ENV);
 
-	if (SPIFFS.begin(true)) {  // Initialize SPIFFS (ESP32 SPI Flash Storage) and format on fail
+	if (LittleFS.begin(true)) {	 // Initialize LittleFS (ESP32 Storage) and format on fail
 		ESP_LOGV("", "FS init by %ims", millis());
 	} else {
-		ESP_LOGE("", "Error mounting SPIFFS (Even with Format on Fail)");
+		ESP_LOGE("", "Error mounting LittleFS (Even with Format on Fail)");
 	}
 
-	// Pin to core 0 so there are no collisions when trying to access files on SPIFFS
-	xTaskCreatePinnedToCore(apWebserver, "apWebserver", 5000, NULL, 1, NULL, 0);
-	xTaskCreatePinnedToCore(addDataToFiles, "addDataToFiles", 3500, NULL, 1, NULL, 0);
+	// Pin to core 0 so there are no collisions when trying to access files on LittleFS
+	// xTaskCreate(apWebserver, "apWebserver", 5000, NULL, 1, NULL);
+	// xTaskCreate(addDataToFiles, "addDataToFiles", 3500, NULL, 0, NULL);
 
-	if (Wire.begin(21, 22, 10000)) {  // Initialize I2C Bus (CO2 and Light Sensor)
-		ESP_LOGV("I2C", "Initialized Correctly by %ims", millis());
-	} else {
-		ESP_LOGE("I2C", "Can't begin I2C Bus");
-	}
+	// Wire1.begin(WIRE1_SDA_PIN, WIRE1_SCL_PIN, 100000);
+	// Wire.begin(WIRE_SDA_PIN, WIRE_SCL_PIN, 100000);
+	//  i2cScan(Wire);
+	//  i2cScan(Wire1);
 
 	// Semaphore Mutexes lock resource access to a single task to prevent both cores crashing into each other.
-	veml7700DataSemaphore = xSemaphoreCreateMutex();
-	scd40DataSemaphore = xSemaphoreCreateMutex();
-	i2cBusSemaphore = xSemaphoreCreateMutex();
+	// veml7700DataSemaphore = xSemaphoreCreateMutex();
+	// scd40DataSemaphore = xSemaphoreCreateMutex();
+	// i2cBusSemaphore = xSemaphoreCreateMutex();
+	predictedCO2Queue = xQueueCreate(1, sizeof(float));
 
 	// 			Function, Name (for debugging), Stack size, Params, Priority, Handle
-	xTaskCreatePinnedToCore(LightSensor, "LightSensor", 2000, NULL, 0, NULL, 1);
-	xTaskCreatePinnedToCore(CO2Sensor, "CO2Sensor", 3000, NULL, 0, NULL, 1);
-	xTaskCreatePinnedToCore(AddressableRGBLeds, "AddressableRGBLeds", 2000, NULL, 0, NULL, 1);
+	// xTaskCreate(LightSensor, "LightSensor", 2000, NULL, 0, NULL);
+	// xTaskCreate(CO2Sensor, "CO2Sensor", 3000, NULL, 0, NULL);
+	xTaskCreate(sensorsAndData, "sensorsAndData", 5000, NULL, 0, NULL);
+	xTaskCreate(AddressableRGBLeds, "AddressableRGBLeds", 2000, NULL, 0, &lightBar);
 }
 
 void loop() {
-	vTaskSuspend(NULL);	 // Loop task Not Needed
+	vTaskDelay(100 / portTICK_PERIOD_MS);
+	// vTaskSuspend(NULL);	 // Loop task Not Needed
 }
 
 void createEmptyJson() {
@@ -699,33 +749,28 @@ double roundTo1DP(double value) {  // rounds a number to 1 decimal place
 	return (int)(value * 10 + 0.5) / 10.0;
 }
 
-void i2cScan() {
+void i2cScan(TwoWire &i2cBus) {
+	TwoWire *ptr;
+	ptr = &i2cBus;
+
 	byte error, address;
-	int nDevices;
-	nDevices = 0;
+	int nDevices = 0;
+
 	for (address = 1; address < 127; address++) {
-		Wire.beginTransmission(address);
-		error = Wire.endTransmission();
+		// The i2c scanner uses the return value of
+		// the Write.endTransmisstion to see if
+		// a device did acknowledge to the address.
+		ptr->beginTransmission(address);
+		error = ptr->endTransmission();
 		if (error == 0) {
-			Serial.print("I2C device found at address 0x");
-			if (address < 16) {
-				Serial.print("0");
-			}
-			Serial.println(address, HEX);
+			Serial.printf("I2C device found at address 0x%02X\n", address);
 			nDevices++;
-		} else if (error == 4) {
-			Serial.print("Error at address 0x");
-			if (address < 16) {
-				Serial.print("0");
-			}
-			Serial.println(address, HEX);
+		} else if (error != 2) {
+			Serial.printf("Error %d at address 0x%02X\n", error, address);
 		}
 	}
-	if (nDevices == 0) {
-		ESP_LOGE("", "No I2C devices found on Scan");
-	}
-}
 
-float mapCO2ToHue(uint16_t ledCO2) {
-	return (float)(ledCO2 - (uint16_t)CO2_MIN) * ((float)CO2_MAX_HUE - (float)CO2_MIN_HUE) / (float)((uint16_t)CO2_MAX - (uint16_t)CO2_MIN) + (float)CO2_MIN_HUE;
+	if (nDevices == 0) {
+		Serial.print("No I2C devices found\n\n");
+	}
 }
