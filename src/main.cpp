@@ -1,22 +1,18 @@
 /*!
  * @file  main.cpp
- * @brief  Kea Studios Open Source Air Quality (CO2) Sensor Firmware
+ * @brief  keaStudios CO2 Sensor Firmware
  * @copyright Chris Dirks
  * @license  HIPPOCRATIC LICENSE Version 3.0
- * @author  @CD_FER (Chris Dirks)
+ * @author  @CDFER (Chris Dirks)
  * @created 14/02/2023
  * @url  http://www.keastudios.co.nz
  *
  *
  * ESP32 Wroom Module
- * Lights up a strip of WS2812B Addressable RGB LEDs to display a scale of the ambient CO2 level
- * CO2 data is from a Sensirion SCD40
- * The LEDs are adjusted depending on the ambient Light data from a VEML7700
+ * Lights up a strip of WS2812B Addressable RGB LEDs to display a scale of the ambient CO2 level (Light Bar)
+ * CO2 data is from a Sensirion SCD40 or SCD41
+ * The LEDs are adjusted depending on the ambient Light
  * There is also a webserver which displays graphs of CO2, Humidity, Temperature and Lux while also providing a csv download for that data
- *
- * i2c (IO21 -> SDA, IO22 ->SCL) -> SCD40 & VEML7700 (3.3V Power and Data)
- * IO2 (3.3V) -> SN74LVC2T45 Level Shifter (5v) -> WS2812B (5v Power and Data)
- * USB C power (5v Rail) -> XC6220B331MR-G -> 3.3V Rail
  */
 
 #include <Arduino.h>
@@ -34,22 +30,22 @@
 // Onboard Flash Storage
 #include <LittleFS.h>
 
-// Addressable LEDs
-#include <NeoPixelBusLg.h>	// instead of NeoPixelBus.h (has Luminace and Gamma as default)
+// Light Bar
+#include <NeoPixelBus.h>
 
-// I2C (CO2 & LUX)
+// I2C (Sensors + Clock)
 #include <Wire.h>
 
-// VEML7700 (LUX)
+// LTR303 (Light sensor)
 // #include <DFRobot_VEML7700.h>
 
-// SCD40/41 (CO2)
-#include <scd4x.h>
+// SCD4x (CO2 sensor)
+#include "scd4x.h"
 
 // to store last time data was recorded
-#include <Preferences.h>
+// #include <Preferences.h>
 
-// I2C Back Up Clock (RTC)
+// pcf8563 (Backup Clock)
 #include "pcf8563.h"
 #include "sntp.h"
 #include "time.h"
@@ -63,9 +59,22 @@
 #define WIRE_SCL_PIN 22
 #define WIRE1_SDA_PIN 33
 #define WIRE1_SCL_PIN 32
-#define PIXEL_COUNT 11	   // Number of Addressable Pixels to write data to (starts at pixel 1)
-#define PIXEL_DATA_PIN 16  // GPIO -> LEVEL SHIFT -> Pixel 1 Data In Pin
 
+#define PIXEL_DATA_PIN 16  // GPIO -> LEVEL SHIFT -> Pixel 1 Data In Pin
+#define PIXEL_COUNT 11	   // Number of Addressable Pixels to write data to (starts at pixel 1)
+#define CO2_MAX 2000	   // top of the CO2 LightBar (also when it transitions to warning Flash)
+#define CO2_MIN 450		   // bottom of the LightBar
+#define FRAME_TIME 30	   // Milliseconds between frames 30ms = ~33.3fps maximum
+
+#define TEMP_OFFSET 6.4	 // The Enclosure runs a bit hot reduce to get a more accurate ambient
+
+// -----------------------------------------
+//
+//    Config Settings
+//
+// -----------------------------------------
+const char *ssid = "Kea-CO2";  // Name of the Wifi Access Point, FYI The SSID can't have a space in it.
+const char *password = "";	   // Password of the Wifi Access Point, leave as "" for no Password
 
 #define DATA_RECORD_INTERVAL_MINS 1
 
@@ -76,11 +85,6 @@ char jsonLogPreview[] = "/data.json";  // name of the file which has the json us
 #define JSON_DATA_POINTS_MAX 32
 #define MIN_JSON_SIZE_BYTES 350	  // tune to empty json size
 #define MAX_JSON_SIZE_BYTES 3000  // tune to number of Data Points (do not forget to leave space for large timestamp)
-// Allocate the JSON document spot in RAM Use https://arduinojson.org/v6/assistant to compute the size.
-DynamicJsonDocument jsonDataDocument(8192);
-
-const char *ssid = "Kea-CO2";  // Name of the Wifi Access Point, FYI The SSID can't have a space in it.
-const char *password = "";	   // Password of the Wifi Access Point, leave as "" for no Password
 
 const IPAddress localIP(4, 3, 2, 1);					// the IP address the webserver, Samsung requires the IP to be in public space
 const IPAddress gatewayIP(4, 3, 2, 1);					// IP address of the network (should be the same as the local IP in most cases)
@@ -91,33 +95,15 @@ const String localIPURL = "http://4.3.2.1/index.html";	// URL to the webserver (
 //    Global Variables (used doubles over floats due to float errors with Arduino json)
 //
 // -----------------------------------------
-SemaphoreHandle_t i2cBusSemaphore;	// control which task has access to the i2c port
-
-SemaphoreHandle_t veml7700DataSemaphore;  // control which task (core) has access to the global veml7700Data Variables
-bool veml7700DataValid = false;			  // Global flag set to true if the VEML7700 variables hold valid data
-double Lux;								  // Global Lux
-
-SemaphoreHandle_t scd40DataSemaphore;  // control which task (core) has access to the global scd40 Variables
-bool scd40DataValid = false;		   // Global flag true if the SCD40 variables hold valid data
-//double co2 = 0;						   // Global CO2 Level from SCD40 (updates every 5s)
-double temperature = 0;				   // Global temperature
-double humidity = 0;				   // Global humidity
-#define TEMP_OFFSET 6.4				   // The Enclosure runs a bit hot reduce to get a more accurate ambient
+// Allocate the JSON document spot in RAM Use https://arduinojson.org/v6/assistant to compute the size.
+DynamicJsonDocument jsonDataDocument(8192);
 
 hw_timer_t *timer = NULL;
-volatile bool writeDataFlag = false;  // set by timer interrupt and used by addDataToFiles() task to know when to print datapoints to csv
-volatile bool clearDataFlag = false;  // set by webserver and used by addDataToFiles() task to know when to clear the csv
-volatile bool dataFullFlag = false;
-
-uint8_t globalLedLux = 255;	  // Global 8bit Lux (Max 127lx) (not Locked)
-uint16_t globalLedco2 = 450;  // Global CO2 Level (not locked)
-
-
-QueueHandle_t predictedCO2Queue;
 TaskHandle_t lightBar = NULL;
+TaskHandle_t writeDataToFile = NULL;
 
 // sets global jsonDataDocument to have y axis names and graph colors but with one data point (x = 0, y = null) per graph data array
-void 	createEmptyJson();
+void createEmptyJson();
 // round double variable to 1 decimal place
 double roundTo1DP(double value);
 // round double variable to 2 decimal places
@@ -125,134 +111,95 @@ double roundTo2DP(double value);
 // scan all i2c devices and prints results to serial
 void i2cScan(TwoWire &i2cBus);
 
-// -----------------------------------------
-//
-//    Addressable LED Config
-//
-// -----------------------------------------
-#define CO2_MAX 2000	 // top of the CO2 Scale (also when it transitions to warning Flash)
-#define CO2_MAX_HUE 0.0	 // top of the Scale (Red Hue)
-#define CO2_MIN 450		 // bottom of the Scale
-#define CO2_MIN_HUE 0.3	 // bottom of the Scale (Green Hue)
-
-#define LED_OFF_LUX 250
-#define LED_ON_LUX 5
-
-#define FRAME_TIME 30	   // Milliseconds between frames 30ms = ~33.3fps maximum
-#define SCD4x_TIME 5000	   // Milliseconds between updates
-
-#define OFF RgbColor(0)											   // Black no leds on
-#define WARNING_COLOR RgbColor(HsbColor(CO2_MAX_HUE, 1.0f, 1.0f))  // full red
-
-#define PPM_PER_PIXEL ((CO2_MAX - CO2_MIN) / PIXEL_COUNT)  // how many parts per million of co2 each pixel represents
-
-float mapCO2toHue(float inputCO2) {
-	return (float)((inputCO2 - (float)CO2_MIN) * ((float)CO2_MAX_HUE - (float)CO2_MIN_HUE) / (float)(CO2_MAX - (float)CO2_MIN) + (float)CO2_MIN_HUE);
+uint16_t mapCO2toPosition(double inputCO2) {
+	return (uint16_t)((inputCO2 - CO2_MIN) * (LIGHTBAR_MAX_POSITION) / (CO2_MAX - CO2_MIN));
 }
 
-float mapCO2toPosition(float inputCO2) {
-	return (float)((inputCO2 - (float)CO2_MIN) / (float)(CO2_MAX - (float)CO2_MIN));
-}
+void lightBarTask(void *parameter) {
+#define LIGHTBAR_MAX_POSITION PIXEL_COUNT * 255
+#define OFF RgbColor(0)
 
-void AddressableRGBLeds(void *parameter) {
-	NeoPixelBusLg<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> strip(PIXEL_COUNT, PIXEL_DATA_PIN);	 // uses i2s silicon remapped to any pin to drive led data
-
-	uint8_t ledLux = globalLedLux;
-	uint8_t currentBrightness = 127;
-	uint8_t targetBrightness = 255;
-	bool updateLeds = true;
-
-	float predictedCO2 = 0, 	ledCO2 = 0, 	smoothPredictedCO2 = 0;
-	uint32_t syncCO2;
+	NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> strip(PIXEL_COUNT, PIXEL_DATA_PIN);  // uses i2s silicon remapped to any pin to drive led data
 
 	strip.Begin();
 	strip.Show();  // init to black
 
-	// Startup Fade IN OUT Green
-	uint8_t i = 0;
-	while (i < 250) {
-		strip.ClearTo(RgbColor(0, i, 0));
-		strip.Show();
-		i += 5;
-		vTaskDelay(FRAME_TIME / portTICK_PERIOD_MS);  // vTaskDelay wants ticks, not milliseconds
-	}
+	uint32_t rawPosition = 0;
+	uint16_t targetPosition = 0;
+	uint16_t outputPosition = 0;
 
-	while (i > 5) {
-		strip.ClearTo(RgbColor(0, i, 0));
-		strip.Show();
-		i -= 5;
-		vTaskDelay(FRAME_TIME / portTICK_PERIOD_MS);  // vTaskDelay wants ticks, not milliseconds
-	}
+	RgbColor baseColor;
+	uint8_t redGreenMix;
+	uint16_t mixingPixel;
+	uint8_t mixingPixelBrightness;
+
+	bool overMaxPosition = false;
+
+	// Startup Fade IN OUT Green
+	// uint8_t i = 0;
+	// while (i < 250) {
+	// 	strip.ClearTo(RgbColor(0, i, 0));
+	// 	strip.Show();
+	// 	i += 5;
+	// 	vTaskDelay(FRAME_TIME / portTICK_PERIOD_MS);  // vTaskDelay wants ticks, not milliseconds
+	// }
+
+	// while (i > 5) {
+	// 	strip.ClearTo(RgbColor(0, i, 0));
+	// 	strip.Show();
+	// 	i -= 5;
+	// 	vTaskDelay(FRAME_TIME / portTICK_PERIOD_MS);  // vTaskDelay wants ticks, not milliseconds
+	// }
 
 	while (true) {
-		// Convert Lux to Luminance and smooth
-		// if (currentBrightness != targetBrightness) {
-		// 	if (currentBrightness < targetBrightness) {
-		// 		currentBrightness++;
-		// 		strip.SetLuminance(currentBrightness);	// Luminance is a gamma corrected Brightness
-		// 	} else if (currentBrightness > targetBrightness) {
-		// 		currentBrightness--;
-		// 		strip.SetLuminance(currentBrightness);	// Luminance is a gamma corrected Brightness
-		// 	}
-		// 	updateLeds = true;	// SetLuminance does NOT affect current pixel data, therefore we must force Redraw of LEDs
-		// } else if (ledLux != globalLedLux) {
-		// 	ledLux = globalLedLux;
+		xTaskNotifyWait(0, 65535, &rawPosition, 0);
 
-		// 	if (globalLedLux > LED_ON_LUX && targetBrightness < 255) {
-		// 		targetBrightness = 255;
-		// 	} else if (globalLedLux < LED_OFF_LUX && targetBrightness > 0) {
-		// 		targetBrightness = 0;
-		// 	}
-		// }
-
-		// Convert globalLedco2 to ledco2 and smooth
-		// if (globalLedco2 != ledCO2) {
-		// 	if (ledCO2 > globalLedco2 && ledCO2 > CO2_MIN) {
-		// 		ledCO2--;
-		// 	} else {
-		// 		ledCO2++;
-		// 	}
-		// 	updateLeds = true;
-		// }
-		xTaskNotifyWait(0, 1, &syncCO2, 0);
-
-		if (syncCO2 == true) {
-			xQueueReceive(predictedCO2Queue, &predictedCO2, 0);
+		if (rawPosition > 0) {
+			if (rawPosition < LIGHTBAR_MAX_POSITION) {
+				targetPosition = (uint16_t)rawPosition;
+				overMaxPosition = false;
+			} else {
+				overMaxPosition = true;
+			}
 		}
 
-		smoothPredictedCO2 = smoothPredictedCO2 + (predictedCO2 - smoothPredictedCO2) / (SCD4x_TIME/FRAME_TIME);
-		ledCO2 = ledCO2 + (smoothPredictedCO2 - ledCO2) / (SCD4x_TIME / FRAME_TIME);
+		if (overMaxPosition == false) {
+			if (outputPosition != targetPosition) {
+				if (outputPosition > targetPosition) {
+					outputPosition--;
+				} else if (outputPosition < targetPosition) {
+					outputPosition += (targetPosition - outputPosition) / 32;
+					outputPosition++;
+				}
 
-		//if (outputCO2 < CO2_MAX) {
-		float position = mapCO2toPosition(ledCO2);
-		uint8_t mixingPixel = (int)(position * PIXEL_COUNT);
-		float mixingPixelBrightness = (position * PIXEL_COUNT) - mixingPixel;
-		float hue = mapCO2toHue(ledCO2);
+				redGreenMix = outputPosition / PIXEL_COUNT;
+				mixingPixel = outputPosition / 255;
+				mixingPixelBrightness = outputPosition % 255;
 
-		strip.ClearTo(OFF);
-		strip.ClearTo(HsbColor(hue, 1.0f, 1.0f), 0, mixingPixel);				 // apply base color to first few pixels
-		strip.SetPixelColor(mixingPixel+1, HsbColor(hue, 1.0f, mixingPixelBrightness));  // apply the in-between color mix for the in-between pixel
+				baseColor = RgbColor(redGreenMix, 255 - redGreenMix, 0);
 
-		strip.Show();									  // push led data to buffer
-		//vTaskDelay(FRAME_TIME * 3 / portTICK_PERIOD_MS);  // don't waste cpu time
+				strip.ClearTo(OFF);
 
-		// } else {
-		// 	strip.SetLuminance(255);
+				strip.SetPixelColor(mixingPixel, baseColor.Dim(mixingPixelBrightness));
 
-		// 	do {
-		// 		strip.ClearTo(OFF);
-		// 		strip.Show();
-		// 		vTaskDelay(1000 / portTICK_PERIOD_MS);
-		// 		strip.ClearTo(WARNING_COLOR);
-		// 		strip.Show();
-		// 		vTaskDelay(1000 / portTICK_PERIOD_MS);
-		// 	} while (co2 > CO2_MAX);
-		// 	ledCO2 = co2;  // ledCo2 will have not been updated during CO2 waring Flash
-		// 	strip.ClearTo(OFF);
-		// 	strip.Show();
-		// 	vTaskDelay(1000 / portTICK_PERIOD_MS);
-		// }
-		vTaskDelay(FRAME_TIME / portTICK_PERIOD_MS);  // time between frames
+				if (mixingPixel > 0) {
+					strip.ClearTo(baseColor, 0, mixingPixel - 1);
+				}
+
+				strip.Show();
+			}
+			vTaskDelay(FRAME_TIME / portTICK_PERIOD_MS);  // time between frames
+		} else {
+			strip.ClearTo(OFF);
+			strip.Show();
+			vTaskDelay(500 / portTICK_PERIOD_MS);
+
+			strip.ClearTo(RgbColor(255, 0, 0));
+			strip.Show();
+			vTaskDelay(500 / portTICK_PERIOD_MS);
+
+			outputPosition = LIGHTBAR_MAX_POSITION;
+		}
 	}
 }
 
@@ -306,7 +253,7 @@ void apWebserver(void *parameter) {
 
 	server.on("/yesclear.html", HTTP_GET, [](AsyncWebServerRequest *request) {	// when client asks for the json data preview file..
 		request->redirect(localIPURL);
-		clearDataFlag = true;
+		// clearDataFlag = true;
 		createEmptyJson();
 		ESP_LOGI("", "data clear Requested");
 	});
@@ -356,9 +303,9 @@ void apWebserver(void *parameter) {
 }
 
 void IRAM_ATTR onTimerInterrupt() {
-	writeDataFlag = true;  // set flag for data write during interrupt from timer
+	xTaskNotify(writeDataToFile, true, eSetValueWithOverwrite);
 }
-/* 
+/*
 void addDataToFiles(void *parameter) {
 	timer = timerBegin(0, 80, true);										   // timer_id = 0; divider=80 (80 MHz APB_CLK clock => 1MHz clock); countUp = true;
 	timerAttachInterrupt(timer, &onTimerInterrupt, false);					   // edge = false
@@ -531,7 +478,7 @@ void syncWifiTimeToRTC(PCF8563_Class &rtc, const char *ssid, const char *passwor
 	Serial.printf("Connecting to %s ", ssid);
 	WiFi.begin(ssid, password);
 	uint8_t retryCount = 0;
-	while (WiFi.status() != WL_CONNECTED && retryCount <20) {
+	while (WiFi.status() != WL_CONNECTED && retryCount < 20) {
 		vTaskDelay(100 / portTICK_PERIOD_MS);
 		retryCount++;
 	}
@@ -555,22 +502,16 @@ void sensorsAndData(void *parameter) {
 	PCF8563_Class rtc;
 	scd4x scd4x;
 
-	//const int16_t SCD_ADDRESS = 0x62;
 	const char *time_zone = "NZST-12NZDT,M9.5.0,M4.1.0/3";	// https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv
 
 	Wire.begin(WIRE_SDA_PIN, WIRE_SCL_PIN, 100000);
-	rtc.begin(Wire);
 	scd4x.begin(Wire);
+	scd4x.startPeriodicMeasurement();
 
+	rtc.begin(Wire);
+	rtc.syncToSystem();
 	setenv("TZ", time_zone, 1);
 	tzset();
-
-	rtc.syncToSystem();
-
-	// Wire.beginTransmission(SCD_ADDRESS);
-	// Wire.write(0x21);
-	// Wire.write(0xb1);
-	// Wire.endTransmission();
 
 	// const char *ssid = "Nest";
 	// const char *password = "sL&WeEnJs33F";
@@ -579,87 +520,32 @@ void sensorsAndData(void *parameter) {
 	// tzset();
 
 	struct tm timeinfo;
-	double CO2 = 0, temperature = 0, humidity = 0;
-	double prevCO2 = 0, trendCO2 = 0;
-	float predictedCO2 = 0;
+	double CO2, temperature, humidity;
+	double prevCO2 = 1000, trendCO2 = 0;
+	uint16_t position;
+
+	vTaskDelay(4700 / portTICK_PERIOD_MS);	// chill while scd40 wakes up and gets a data point
 
 	while (true) {
-		scd4x.isDataReady();
-		
-		if (scd4x.readMeasurement(CO2, temperature, humidity) == 0) {
-			trendCO2 = 0.5 * (CO2 - prevCO2) + (1 - 0.5) * trendCO2;
-			predictedCO2 = (float)((CO2) + trendCO2);
-			prevCO2 = CO2;
-
-			xQueueOverwrite(predictedCO2Queue, (void *)&predictedCO2);
-			xTaskNotify(lightBar, true, eSetValueWithOverwrite);
-
-			getLocalTime(&timeinfo);
-			char timeBuf[64];
-			size_t written = strftime(timeBuf, 64, "%d/%m/%y,%H:%M:%S", &timeinfo);
-
-			Serial.printf("%s,%4.0f,%2.1f,%1.0f\n", timeBuf, CO2, temperature, humidity);
+		while (scd4x.isDataReady() == false) {
+			vTaskDelay(10 / portTICK_PERIOD_MS);
 		}
 
-		// send read data command
-		// Wire.beginTransmission(SCD_ADDRESS);
-		// Wire.write(0xec);
-		// Wire.write(0x05);
-		// if (Wire.endTransmission(true) == 0) {
-		// 	// read measurement data: 2 bytes co2, 1 byte CRC,
-		// 	// 2 bytes T, 1 byte CRC, 2 bytes RH, 1 byte CRC,
-		// 	// 2 bytes sensor status, 1 byte CRC
-		// 	// stop reading after bytesRequested (12 bytes)
+		if (scd4x.readMeasurement(CO2, temperature, humidity) == 0) {
+			trendCO2 = 0.5 * (CO2 - prevCO2) + (1 - 0.5) * trendCO2;
+			position = mapCO2toPosition(CO2 + trendCO2);
+			xTaskNotify(lightBar, position, eSetValueWithOverwrite);
 
-		// 	uint8_t bytesReceived = Wire.requestFrom(SCD_ADDRESS, bytesRequested);
-		// 	if (bytesReceived == bytesRequested) {	// If received requested amount of bytes than zero bytes
-		// 		uint8_t data[bytesReceived];
-		// 		Wire.readBytes(data, bytesReceived);
-
-		// 		// floating point conversion
-		// 		CO2 = (double)((uint16_t)data[0] << 8 | data[1]);
-		// 		// convert T in degC
-		// 		rawTemperature = -45 + 175 * (double)((uint16_t)data[3] << 8 | data[4]) / 65536;
-		// 		// convert RH in %
-		// 		rawHumidity = 100 * (double)((uint16_t)data[6] << 8 | data[7]) / 65536;
-
-		// 		getLocalTime(&timeinfo);
-
-		// 		trendCO2 = 0.5 * (CO2 - prevCO2) + (1 - 0.5) * trendCO2;
-		// 		predictedCO2 = (float)((CO2) + trendCO2);
-		// 		prevCO2 = CO2;
-
-		// 		//Serial.println(predictedCO2);
-		// 		xQueueOverwrite(predictedCO2Queue, (void *)&predictedCO2);
-		// 		xTaskNotify(lightBar, true, eSetValueWithOverwrite);
-
-		// 		char timeBuf[64];
-		// 		size_t written = strftime(timeBuf, 64, "%d/%m/%y,%H:%M:%S", &timeinfo);
-
-		// 		//Serial.print(&timeinfo, "%d/%m/%y %H:%M:%S");
-		// 		//Serial.printf("%s,%4.0f,%2.1f,%1.0f\n", timeBuf, rawCO2, rawTemperature, rawHumidity);
-		// 	} else {
-		// 		ESP_LOGE("SCD4x CO2", "I2C bytesReceived(%i) != bytesRequested(%i)", bytesReceived, bytesRequested);
-		// 	}
-		// } else {
-		// 	ESP_LOGE("SCD4x CO2", "I2C Wire.endTransmission");
-		// }
-
-		// for (size_t i = 0; i < 50; i++)
-		// {
-		// 	uint32_t calcStart = millis();
-		// 	smoothPredictedCO2 = smoothPredictedCO2 + (predictedCO2 - smoothPredictedCO2) / 25;
-		// 	outputCO2 = outputCO2 + (smoothPredictedCO2 - outputCO2) / 25;
-		// 	uint32_t calcEnd = millis();
-		// 	//ESP_LOGV("", "%f calc in ~%ums", outputCO2, (calcStart - calcEnd));
-		// 	// Serial.printf("%4.2f,%4.2f,%4.2f,%4.2f\n", CO2, predictedCO2, smoothPredictedCO2, outputCO2);
-		// 	vTaskDelay(100 / portTICK_PERIOD_MS);
-		// }
-		vTaskDelay(5000 / portTICK_PERIOD_MS);
+			prevCO2 = CO2;
+			// Serial.printf("%4.0f,%2.1f,%1.0f\n", CO2, temperature, humidity);
+			vTaskDelay(4700 / portTICK_PERIOD_MS);	// chill while scd40 gets new data
+		}
 	}
 }
 
 void setup() {
+	xTaskCreate(lightBarTask, "lightBar", 2000, NULL, 0, &lightBar);
+
 	Serial.setTxBufferSize(1024);
 	Serial.begin(115200);
 	while (!Serial)
@@ -676,22 +562,9 @@ void setup() {
 	// xTaskCreate(apWebserver, "apWebserver", 5000, NULL, 1, NULL);
 	// xTaskCreate(addDataToFiles, "addDataToFiles", 3500, NULL, 0, NULL);
 
-	// Wire1.begin(WIRE1_SDA_PIN, WIRE1_SCL_PIN, 100000);
-	// Wire.begin(WIRE_SDA_PIN, WIRE_SCL_PIN, 100000);
-	//  i2cScan(Wire);
-	//  i2cScan(Wire1);
-
-	// Semaphore Mutexes lock resource access to a single task to prevent both cores crashing into each other.
-	// veml7700DataSemaphore = xSemaphoreCreateMutex();
-	// scd40DataSemaphore = xSemaphoreCreateMutex();
-	// i2cBusSemaphore = xSemaphoreCreateMutex();
-	predictedCO2Queue = xQueueCreate(1, sizeof(float));
-
 	// 			Function, Name (for debugging), Stack size, Params, Priority, Handle
 	// xTaskCreate(LightSensor, "LightSensor", 2000, NULL, 0, NULL);
-	// xTaskCreate(CO2Sensor, "CO2Sensor", 3000, NULL, 0, NULL);
 	xTaskCreate(sensorsAndData, "sensorsAndData", 5000, NULL, 0, NULL);
-	xTaskCreate(AddressableRGBLeds, "AddressableRGBLeds", 2000, NULL, 0, &lightBar);
 }
 
 void loop() {
