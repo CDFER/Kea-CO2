@@ -10,11 +10,13 @@ A ESP32 based device to visualize co2 levels
 ![User interface](/images/ui1.png)
 
 ## Features
+- download spreadsheet of co2, temp and humidity data
+- realtime graphs viewable through web interface
 - external backup clock
 - fail safe file system to store data
 - timezone support
 - sync time through a unlocked wifi network Server (STA + AP Mode)
-- PCB Supports Jtag (Through Breakout Connector)
+- PCB Supports Jtag debugging (Through Breakout Connector)
 
 ### Did it work?
 
@@ -36,8 +38,10 @@ If you test this code on a device it would be really helpful if you add issues y
 - ArduinoJson @ 6.20.1 (The MIT License (c) Benoit BLANCHON)
 - Apex Charts (JavaScript) (The MIT License)
 
+```c++
 RAM:   [=         ]  14.3% (used 46844 bytes from 327680 bytes)
 Flash: [========= ]  91.1% (used 932373 bytes from 1024000 bytes)
+```
 
 ### Useful Extensions
 
@@ -53,7 +57,6 @@ ESP32 Wroom Module
  - Lights up a strip of WS2812B Addressable RGB LEDs to display a scale of the ambient CO2 level
  - CO2 data is from a Sensirion SCD40
  - The LEDs are adjusted depending on the ambient Light
- - There is also a webserver which displays graphs of CO2, Humidity and Temperature while also providing a csv download for that data
 
 
 ## ✌️ Other

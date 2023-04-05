@@ -102,7 +102,7 @@ const String localIPURL = "http://4.3.2.1/index.html";	// URL to the webserver (
 //
 // -----------------------------------------
 // Allocate the JSON document size in RAM https://arduinojson.org/v6/assistant to compute the size.
-DynamicJsonDocument jsonDataDocument(23520); //18816 bytesk for 128 points used in testing, 25% buffer
+DynamicJsonDocument jsonDataDocument(23520); //18816 bytes for 128 points used in testing, 25% buffer
 #define JSON_DATA_POINTS_MAX 128
 
 TaskHandle_t lightBar = NULL;
@@ -111,17 +111,49 @@ TaskHandle_t sensorManager = NULL;
 TaskHandle_t webserver = NULL;
 TaskHandle_t jsonFileManager = NULL;
 
-QueueHandle_t charsForCSVFileQueue;
-QueueHandle_t jsonDataQueue;
+QueueHandle_t charsForCSVFileQueue; // kinda like a letterbox that holds a char array of sensor data
+QueueHandle_t jsonDataQueue; // a queue of data points in doubles
 
-SemaphoreHandle_t jsonDocMutex;
+SemaphoreHandle_t jsonDocMutex; //kinda like a lock so only one task accesses the json doc at once
 
-float roundToXDP(uint8_t decimalPlaces, double value);
+/// @brief takes double and returns a float with x decimal places
+/// @param decimalPlaces 0 -> 1.000, 1 -> 1.100, 2-> 1.110
+/// @param value input raw number
+/// @return output float
+float roundToXDP(uint8_t decimalPlaces, double value) {	 // rounds a number to x decimal place
+	return (float)(((int)(value * (10 * decimalPlaces) + 0.5)) / (10 * decimalPlaces));
+}
 
-void productionTest();
+/// @brief set jsonDataDocument to default state (no data points but has graph colors)
+void initJson() {
+	xSemaphoreTake(jsonDocMutex, portMAX_DELAY);  // ask for control of json doc
 
-void initJson();
+	jsonDataDocument.clear();
 
+	JsonObject co2_graph_object = jsonDataDocument.createNestedObject();
+	co2_graph_object["name"] = "CO2";
+	co2_graph_object["color"] = "#70AE6E";
+	co2_graph_object["y_title"] = "CO2 Parts Per Million (PPM)";
+	JsonArray co2_graph_data_array = co2_graph_object["data"].createNestedArray();
+
+	JsonObject humidity_graph_object = jsonDataDocument.createNestedObject();
+	humidity_graph_object["name"] = "Humidity";
+	humidity_graph_object["color"] = "#333745";
+	humidity_graph_object["y_title"] = "Relative humidity (%RH)";
+	JsonArray humidity_graph_data_array = humidity_graph_object["data"].createNestedArray();
+
+	JsonObject temperature_graph_object = jsonDataDocument.createNestedObject();
+	temperature_graph_object["name"] = "Temperature";
+	temperature_graph_object["color"] = "#FE5F55";
+	temperature_graph_object["y_title"] = "Temperature (Deg C)";
+	JsonArray temperature_graph_data_array = temperature_graph_object["data"].createNestedArray();
+
+	xSemaphoreGive(jsonDocMutex);  // release control of json doc
+}
+
+/// @brief converter ppm of CO2 to a light bar position integer
+/// @param inputCO2 (double CO2 level in ppm)
+/// @return uint16_t LIGHTBAR POSITION (each pixel has 255 positions)
 uint16_t mapCO2toPosition(double inputCO2) {
 	if (inputCO2 > CO2_MIN) {
 		return (uint16_t)((inputCO2 - CO2_MIN) * (LIGHTBAR_MAX_POSITION) / (CO2_MAX - CO2_MIN));
@@ -130,6 +162,7 @@ uint16_t mapCO2toPosition(double inputCO2) {
 	}
 }
 
+/// @brief set Light Bar to Black
 void wipeLightBar(void *parameter){
 	NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> lightBar(PIXEL_COUNT, PIXEL_DATA_PIN);  // uses i2s silicon remapped to any pin to drive led data
 
@@ -138,15 +171,12 @@ void wipeLightBar(void *parameter){
 	vTaskDelete(NULL);
 }
 
+/// @brief controls addressable led pixels and uses the i2c ambient light sensor
 void lightBarTask(void *parameter) {
 	NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> lightBar(PIXEL_COUNT, PIXEL_DATA_PIN);  // uses i2s silicon remapped to any pin to drive led data
 
 	lightBar.Begin();
 	lightBar.Show();  // init to black
-
-#ifdef PRODUCTION_TEST
-	productionTest();
-#endif
 
 	LTR303 lightSensor;
 	Wire1.begin(WIRE1_SDA_PIN, WIRE1_SCL_PIN, 500000); //tested to be 380khz irl (400khz per data sheet)
@@ -160,6 +190,9 @@ void lightBarTask(void *parameter) {
 	lightBar.Show();
 	vTaskDelay(1000 / portTICK_PERIOD_MS);
 	lightBar.ClearTo(RgbColor(0, 0, 255));
+	lightBar.Show();
+	vTaskDelay(1000 / portTICK_PERIOD_MS);
+	lightBar.ClearTo(RgbColor(0, 0, 0));
 	lightBar.Show();
 #endif
 
@@ -177,7 +210,7 @@ void lightBarTask(void *parameter) {
 	uint8_t mixingPixelBrightness;
 
 	bool overMaxPosition = false;
-	bool enableLightBar = true;
+	bool updateBrightness = false;
 
 	while (true) {
 		if (lightSensor.getApproximateLux(lux)) {
@@ -188,8 +221,10 @@ void lightBarTask(void *parameter) {
 			}
 			if (brightness > targetBrightness) {
 				brightness--;
+				updateBrightness = true;
 			} else if (brightness < targetBrightness) {
 				brightness++;
+				updateBrightness = true;
 			}
 		}
 
@@ -204,7 +239,7 @@ void lightBarTask(void *parameter) {
 			}
 
 			if (targetPosition < LIGHTBAR_MAX_POSITION) {
-				if (position != targetPosition) {
+				if (position != targetPosition || updateBrightness == true) {  // only update leds when something has changed
 					if (position > targetPosition) {
 						position--;
 					} else if (position < targetPosition) {
@@ -228,9 +263,11 @@ void lightBarTask(void *parameter) {
 					}
 
 					lightBar.Show();
+					updateBrightness = false;
 				}
 				vTaskDelay(FRAME_TIME / portTICK_PERIOD_MS);  // time between frames
 			} else {
+				// flash red to indicate CO2 level over CO2_MAX
 				lightBar.ClearTo(RgbColor(0));
 				lightBar.Show();
 				vTaskDelay(500 / portTICK_PERIOD_MS);
@@ -240,12 +277,14 @@ void lightBarTask(void *parameter) {
 				vTaskDelay(500 / portTICK_PERIOD_MS);
 
 				position = LIGHTBAR_MAX_POSITION;
+				brightness = MAX_BRIGHTNESS;
 			}
 		}
 		
 	}
 }
 
+/// @brief runs webserver, all Wifi functions, sets up NTP servers
 void webserverTask(void *parameter) {
 #define DNS_INTERVAL 30	 // ms between processing dns requests: dnsServer.processNextRequest();
 
@@ -402,6 +441,7 @@ void webserverTask(void *parameter) {
 	}
 }
 
+/// @brief takes csv queue and add it to the csv in flash storage
 void csvFileManagerTask(void *parameter) {
 
 	//------------- Setup CSV File ----------------
@@ -491,6 +531,7 @@ void csvFileManagerTask(void *parameter) {
 	}
 }
 
+/// @brief takes json queue and add it to the json data document in ram
 void jsonFileManagerTask(void *parameter) {
 	const char *time_format = "%H:%M:%S";
 	time_t currentEpoch, prevEpoch = 0;
@@ -552,6 +593,7 @@ void jsonFileManagerTask(void *parameter) {
 	}
 }
 
+/// @brief runs co2 sensor and RTC, puts data in csv and json queues
 void sensorManagerTask(void *parameter) {
 	PCF8563_Class rtc;
 	SCD4X co2;
@@ -559,10 +601,10 @@ void sensorManagerTask(void *parameter) {
 	const char *time_format = "%y/%m/%d,%H:%M";
 
 	Wire.begin(WIRE_SDA_PIN, WIRE_SCL_PIN, 100000);
-	co2.begin(Wire);
 #ifdef PRODUCTION_TEST
 	co2.isConnected(Wire, &Serial);
 #endif
+	co2.begin(Wire);
 	co2.startPeriodicMeasurement();
 
 
@@ -674,49 +716,19 @@ void setup() {
 }
 
 void loop() {
-	vTaskDelay(60000 / portTICK_PERIOD_MS);
-	//vTaskSuspend(NULL);	 // Loop task Not Needed
-	Serial.print(uxTaskGetStackHighWaterMark(lightBar));
-	Serial.print(", ");
-	Serial.print(uxTaskGetStackHighWaterMark(webserver));
-	Serial.print(", ");
-	Serial.print(uxTaskGetStackHighWaterMark(sensorManager));
-	Serial.print(", ");
-	Serial.print(uxTaskGetStackHighWaterMark(csvFileManager));
-	Serial.print(", ");
-	Serial.print(uxTaskGetStackHighWaterMark(jsonFileManager));
-	Serial.print(", ");
-	xSemaphoreTake(jsonDocMutex, 1000 / portTICK_PERIOD_MS);
-	Serial.println(jsonDataDocument.memoryUsage());
-	xSemaphoreGive(jsonDocMutex);
-}
-
-float roundToXDP(uint8_t decimalPlaces, double value){  // rounds a number to x decimal place
-	return (float)(((int)(value * (10 * decimalPlaces) + 0.5)) / (10 * decimalPlaces));
-}
-
-void initJson(){
-	xSemaphoreTake(jsonDocMutex, portMAX_DELAY);  // ask for control of json doc
-
-	jsonDataDocument.clear();
-
-	JsonObject co2_graph_object = jsonDataDocument.createNestedObject();
-	co2_graph_object["name"] = "CO2";
-	co2_graph_object["color"] = "#70AE6E";
-	co2_graph_object["y_title"] = "CO2 Parts Per Million (PPM)";
-	JsonArray co2_graph_data_array = co2_graph_object["data"].createNestedArray();
-
-	JsonObject humidity_graph_object = jsonDataDocument.createNestedObject();
-	humidity_graph_object["name"] = "Humidity";
-	humidity_graph_object["color"] = "#333745";
-	humidity_graph_object["y_title"] = "Relative humidity (%RH)";
-	JsonArray humidity_graph_data_array = humidity_graph_object["data"].createNestedArray();
-
-	JsonObject temperature_graph_object = jsonDataDocument.createNestedObject();
-	temperature_graph_object["name"] = "Temperature";
-	temperature_graph_object["color"] = "#FE5F55";
-	temperature_graph_object["y_title"] = "Temperature (Deg C)";
-	JsonArray temperature_graph_data_array = temperature_graph_object["data"].createNestedArray();
-
-	xSemaphoreGive(jsonDocMutex);  // release control of json doc
+	//vTaskDelay(60000 / portTICK_PERIOD_MS);
+	vTaskSuspend(NULL);	 // Loop task Not Needed
+	// Serial.print(uxTaskGetStackHighWaterMark(lightBar));
+	// Serial.print(", ");
+	// Serial.print(uxTaskGetStackHighWaterMark(webserver));
+	// Serial.print(", ");
+	// Serial.print(uxTaskGetStackHighWaterMark(sensorManager));
+	// Serial.print(", ");
+	// Serial.print(uxTaskGetStackHighWaterMark(csvFileManager));
+	// Serial.print(", ");
+	// Serial.print(uxTaskGetStackHighWaterMark(jsonFileManager));
+	// Serial.print(", ");
+	// xSemaphoreTake(jsonDocMutex, 1000 / portTICK_PERIOD_MS);
+	// Serial.println(jsonDataDocument.memoryUsage());
+	// xSemaphoreGive(jsonDocMutex);
 }
