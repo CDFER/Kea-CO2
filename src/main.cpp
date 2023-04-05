@@ -87,6 +87,7 @@ const char *password = "";								// Password of the WiFi access point (leave bl
 // as well as the IP and URL for the web server
 char CSVLogFilename[] = "/Kea-CO2-Data.csv";			// Location of the CSV file
 #define MAX_CSV_SIZE_BYTES 2000000						// Maximum size of the CSV file (2 MB)
+#define CSV_LINE_MAX_CHARS 32							// Maximum size of the csvLine character buffer
 const IPAddress localIP(4, 3, 2, 1);					// IP address of the web server (Samsung requires the IP to be in public space)
 const IPAddress gatewayIP(4, 3, 2, 1);					// IP address of the network (should be the same as the local IP in most cases)
 const String localIPURL = "http://4.3.2.1/index.html";	// URL to the web server (same as the local IP, but as a string with http and the landing page subdomain)
@@ -204,6 +205,99 @@ void wipeLightBar(void *parameter) {
 	vTaskDelete(NULL);
 }
 
+// Initializes the LED strip to black.
+void initializeLightBar(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> &lightBar) {
+	lightBar.Begin();
+	lightBar.Show();
+}
+
+// Reads the light sensor and adjusts the brightness of the LED strip based on the light level.
+bool updateBrightness(LTR303 &lightSensor, uint8_t &brightness, uint8_t &targetBrightness) {
+	double lux;
+	if (lightSensor.getApproximateLux(lux)) {
+		if (lux < BRIGHTNESS_FACTOR * MAX_BRIGHTNESS) {
+			targetBrightness = (uint16_t)(lux / BRIGHTNESS_FACTOR);
+		} else {
+			targetBrightness = MAX_BRIGHTNESS;
+		}
+		if (brightness > targetBrightness) {
+			brightness--;
+			return true;
+		} else if (brightness < targetBrightness) {
+			brightness++;
+			return true;
+		}
+	}
+	return false;
+}
+
+// Updates the position of the lighting effect on the LED strip based on a target position.
+void updatePosition(uint16_t &position, const uint16_t &targetPosition) {
+	if (targetPosition < LIGHTBAR_MAX_POSITION) {  // if position is in valid range
+		if (position > targetPosition) {
+			position--;
+		} else if (position < targetPosition) {
+			position += (targetPosition - position) / 32;
+			position++;
+		}
+	}
+}
+
+// Updates the lighting effect on the LED strip.
+void updateLightBar(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> &lightBar, const uint16_t &position, const uint8_t &brightness) {
+	uint8_t redGreenMix = position / PIXEL_COUNT;	 // 0 - 255 version of position
+	uint16_t mixingPixel = position / 255;			 // which pixel is the position at
+	uint8_t mixingPixelBrightness = position % 255;	 // what is the local position of the pixel
+
+	mixingPixel = LAST_PIXEL - mixingPixel;	 // reverse direction of lightbar (0th pixel is the top)
+
+	RgbColor baseColor = RgbColor(redGreenMix, 255 - redGreenMix, 0).Dim(brightness);  // brew base color -> Green at bottom, Red at top
+
+	lightBar.SetPixelColor(mixingPixel - 1, RgbColor(0));						// set one pixel above the mixing pixel to black
+	lightBar.SetPixelColor(mixingPixel, baseColor.Dim(mixingPixelBrightness));	// set mixing pixel
+
+	if (mixingPixel < LAST_PIXEL) {
+		lightBar.ClearTo(baseColor, mixingPixel + 1, LAST_PIXEL);  // fill solid color to the bottom of the bar
+	}
+
+	lightBar.Show();
+}
+
+// Handles the target position notification and sets the target position.
+void handleTargetPositionNotification(uint16_t &targetPosition, uint32_t &rawPosition) {
+	if (rawPosition > 0) {
+		if (rawPosition < 65535) {	// 16-bit int overflow protection
+			targetPosition = (uint16_t)rawPosition;
+		}
+	}
+}
+
+// Flash all pixels red to indicate CO2 level over CO2_MAX
+void flashLightBarRed(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> &lightBar) {
+	lightBar.ClearTo(RgbColor(0));
+	lightBar.Show();
+	vTaskDelay(500 / portTICK_PERIOD_MS);
+
+	lightBar.ClearTo(RgbColor(255, 0, 0));
+	lightBar.Show();
+	vTaskDelay(500 / portTICK_PERIOD_MS);
+}
+
+// Flash all pixels red, green, blue to test all wiring and config is correct
+void lightBarTestRGB(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> &lightBar) {
+	lightBar.ClearTo(RgbColor(255, 0, 0));
+	lightBar.Show();
+	vTaskDelay(1000 / portTICK_PERIOD_MS);
+	lightBar.ClearTo(RgbColor(0, 255, 0));
+	lightBar.Show();
+	vTaskDelay(1000 / portTICK_PERIOD_MS);
+	lightBar.ClearTo(RgbColor(0, 0, 255));
+	lightBar.Show();
+	vTaskDelay(1000 / portTICK_PERIOD_MS);
+	lightBar.ClearTo(RgbColor(0, 0, 0));
+	lightBar.Show();
+}
+
 /**
  * @brief Controls addressable LED pixels and uses the I2C ambient light sensor.
  *
@@ -224,8 +318,7 @@ void wipeLightBar(void *parameter) {
 void lightBarTask(void *parameter) {
 	NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> lightBar(PIXEL_COUNT, PIXEL_DATA_PIN);  // uses i2s silicon remapped to any pin to drive led data
 
-	lightBar.Begin();
-	lightBar.Show();  // init to black
+	initializeLightBar(lightBar);
 
 	LTR303 lightSensor;
 	Wire1.begin(WIRE1_SDA_PIN, WIRE1_SCL_PIN, 500000);	// tested to be 380khz irl (400khz per data sheet)
@@ -233,17 +326,7 @@ void lightBarTask(void *parameter) {
 
 #ifdef PRODUCTION_TEST
 	lightSensor.isConnected(Wire1, &Serial);
-	lightBar.ClearTo(RgbColor(255, 0, 0));
-	lightBar.Show();
-	vTaskDelay(1000 / portTICK_PERIOD_MS);
-	lightBar.ClearTo(RgbColor(0, 255, 0));
-	lightBar.Show();
-	vTaskDelay(1000 / portTICK_PERIOD_MS);
-	lightBar.ClearTo(RgbColor(0, 0, 255));
-	lightBar.Show();
-	vTaskDelay(1000 / portTICK_PERIOD_MS);
-	lightBar.ClearTo(RgbColor(0, 0, 0));
-	lightBar.Show();
+	lightBarTestRGB(lightBar);
 #endif
 
 	double lux;	 // The measured illumination level in lux.
@@ -251,82 +334,29 @@ void lightBarTask(void *parameter) {
 	uint8_t targetBrightness = 255;	 // The target brightness value for the light bar, ranging from 0 to 255.
 	uint8_t brightness = 255;		 // The current brightness value for the light bar, ranging from 0 to 255.
 
-	uint32_t rawPosition = 0;							  // The raw position value for the light bar, ranging from 0 to LIGHTBAR_MAX_POSITION.
+	uint32_t rawPosition = 0;							  // The raw position value for the light bar, filled from task notification
 	uint16_t targetPosition = LIGHTBAR_MAX_POSITION / 3;  // The target position value for the light bar, ranging from 0 to LIGHTBAR_MAX_POSITION.
 	uint16_t position = 0;								  // The current position value for the light bar, ranging from 0 to LIGHTBAR_MAX_POSITION.
 
-	RgbColor baseColor;				// The base color for the light bar.
-	uint8_t redGreenMix;			// The amount of red to green mixing, ranging from 0 to 255.
-	uint16_t mixingPixel;			// The pixel used for color mixing.
-	uint8_t mixingPixelBrightness;	// The brightness value of the mixing pixel.
-
-	bool overMaxPosition = false;	// Flag indicating if the light bar position has gone over the maximum value.
-	bool updateBrightness = false;	// Flag indicating if the pixel brightness needs to be updated.
+	bool updatePixels = false;	// Flag indicating if the pixel brightness needs to be updated.
 
 	while (true) {
-		if (lightSensor.getApproximateLux(lux)) {
-			if (lux < BRIGHTNESS_FACTOR * MAX_BRIGHTNESS) {
-				targetBrightness = (uint16_t)(lux / BRIGHTNESS_FACTOR);
-			} else {
-				targetBrightness = MAX_BRIGHTNESS;
-			}
-			if (brightness > targetBrightness) {
-				brightness--;
-				updateBrightness = true;
-			} else if (brightness < targetBrightness) {
-				brightness++;
-				updateBrightness = true;
-			}
-		}
+		updatePixels = updateBrightness(lightSensor, brightness, targetBrightness);
 
 		for (uint8_t i = 0; i < 20; i++) {	// get light reading every 20 frames (600ms at 30ms frames)
 			xTaskNotifyWait(0, 65535, &rawPosition, 0);
+			handleTargetPositionNotification(targetPosition, rawPosition);
 
-			if (rawPosition > 0) {
-				if (rawPosition < 65535) {
-					targetPosition = (uint16_t)rawPosition;
-				}
-				// Serial.println(targetPosition);
-			}
-
-			if (targetPosition < LIGHTBAR_MAX_POSITION) {					   // if position is in valid range
-				if (position != targetPosition || updateBrightness == true) {  // only update leds when something has changed
-					if (position > targetPosition) {
-						position--;
-					} else if (position < targetPosition) {
-						position += (targetPosition - position) / 32;
-						position++;
-					}
-
-					redGreenMix = position / PIXEL_COUNT;	 // 0 - 255 version of position
-					mixingPixel = position / 255;			 // which pixel is the position at
-					mixingPixelBrightness = position % 255;	 // what is the local position of the pixel
-
-					mixingPixel = LAST_PIXEL - mixingPixel;	 // reverse direction of lightbar (0th pixel is the top)
-
-					baseColor = RgbColor(redGreenMix, 255 - redGreenMix, 0).Dim(brightness);  // brew base color -> Green at bottom, Red at top
-
-					lightBar.SetPixelColor(mixingPixel - 1, RgbColor(0));						// set one pixel above the mixing pixel to black
-					lightBar.SetPixelColor(mixingPixel, baseColor.Dim(mixingPixelBrightness));	// set mixing pixel
-
-					if (mixingPixel < LAST_PIXEL) {
-						lightBar.ClearTo(baseColor, mixingPixel + 1, LAST_PIXEL);  // fill solid color to the bottom of the bar
-					}
-
-					lightBar.Show();
-					updateBrightness = false;
+			if (targetPosition < LIGHTBAR_MAX_POSITION) {				   // if position is in valid range
+				if (position != targetPosition || updatePixels == true) {  // only update leds when something has changed
+					updatePosition(position, targetPosition);
+					updateLightBar(lightBar, position, brightness);
+					updatePixels = false;
 				}
 				vTaskDelay(FRAME_TIME / portTICK_PERIOD_MS);  // time between frames
 			} else {
 				// flash red to indicate CO2 level over CO2_MAX
-				lightBar.ClearTo(RgbColor(0));
-				lightBar.Show();
-				vTaskDelay(500 / portTICK_PERIOD_MS);
-
-				lightBar.ClearTo(RgbColor(255, 0, 0));
-				lightBar.Show();
-				vTaskDelay(500 / portTICK_PERIOD_MS);
-
+				flashLightBarRed(lightBar);
 				position = LIGHTBAR_MAX_POSITION;
 				brightness = MAX_BRIGHTNESS;
 			}
@@ -334,30 +364,7 @@ void lightBarTask(void *parameter) {
 	}
 }
 
-/**
- * @brief Runs the webserver, all WiFi functions, and sets up NTP servers.
- *
- * This task initializes and runs the webserver, handles all WiFi functionality, and sets up NTP servers for time synchronization. It configures the WiFi
- * mode as an access point and station and sets the IP address, gateway, subnet mask, and DNS server. It also sets up a DNSServer to handle DNS requests and
- * initializes and starts the SNTP client with the specified NTP servers.
- *
- * The webserver serves the following routes:
- * - "/" redirects to the local IP address.
- * - "/data.json" returns a JSON representation of the sensor data.
- * - "/Kea-CO2-Data.csv" returns the Kea-CO2 data file.
- * - "/yesclear.html" clears the sensor data.
- * - "/off" turns off the light bar.
- *
- * @param[in] parameter The task parameter (unused).
- */
-void webserverTask(void *parameter) {
-// Define the DNS interval in milliseconds between processing DNS requests
-#define DNS_INTERVAL 30
-// Define the maximum number of clients that can connect to the server
-#define MAX_CLIENTS 4
-// Define the WiFi channel to be used (channel 6 in this case)
-#define WIFI_CHANNEL 6
-
+void initializeNTPServers() {
 	// Define the NTP servers to be used for time synchronization
 	const char *ntpServer1 = "pool.ntp.org";
 	const char *ntpServer2 = "time.nist.gov";
@@ -369,6 +376,22 @@ void webserverTask(void *parameter) {
 	sntp_setservername(1, (char *)ntpServer2);
 	sntp_setservername(2, (char *)ntpServer3);
 	sntp_init();
+}
+
+void setUpDNSServer(DNSServer &dnsServer, const IPAddress &localIP) {
+// Define the DNS interval in milliseconds between processing DNS requests
+#define DNS_INTERVAL 30
+
+	// Set the TTL for DNS response and start the DNS server
+	dnsServer.setTTL(3600);
+	dnsServer.start(53, "*", localIP);
+}
+
+void startSoftAccessPoint(const char *ssid, const char *password, const IPAddress &localIP, const IPAddress &gatewayIP) {
+// Define the maximum number of clients that can connect to the server
+#define MAX_CLIENTS 4
+// Define the WiFi channel to be used (channel 6 in this case)
+#define WIFI_CHANNEL 6
 
 	// Set the WiFi mode to access point and station
 	WiFi.mode(WIFI_MODE_APSTA);
@@ -376,20 +399,11 @@ void webserverTask(void *parameter) {
 	// Define the subnet mask for the WiFi network
 	const IPAddress subnetMask(255, 255, 255, 0);
 
-	// Create a DNS server instance
-	DNSServer dnsServer;
-	// Create an AsyncWebServer instance listening on port 80
-	AsyncWebServer server(80);
-
 	// Configure the soft access point with a specific IP and subnet mask
 	WiFi.softAPConfig(localIP, gatewayIP, subnetMask);
 
 	// Start the soft access point with the given ssid, password, channel, max number of clients
 	WiFi.softAP(ssid, password, WIFI_CHANNEL, 0, MAX_CLIENTS);
-
-	// Set the TTL for DNS response and start the DNS server
-	dnsServer.setTTL(3600);
-	dnsServer.start(53, "*", localIP);
 
 	// Disable AMPDU RX on the ESP32 WiFi to fix a bug on Android
 	esp_wifi_stop();
@@ -399,14 +413,14 @@ void webserverTask(void *parameter) {
 	esp_wifi_init(&my_config);
 	esp_wifi_start();
 	vTaskDelay(100 / portTICK_PERIOD_MS);  // Add a small delay
+}
 
+void setUpWebserver(AsyncWebServer &server, const IPAddress &localIP) {
 	//======================== Webserver ========================
 	// WARNING IOS (and maybe macos) WILL NOT POP UP IF IT CONTAINS THE WORD "Success" https://www.esp8266.com/viewtopic.php?f=34&t=4398
 	// SAFARI (IOS) IS STUPID, G-ZIPPED FILES CAN'T END IN .GZ https://github.com/homieiot/homie-esp8266/issues/476 this is fixed by the webserver serve static function.
 	// SAFARI (IOS) there is a 128KB limit to the size of the HTML. The HTML can reference external resources/images that bring the total over 128KB
 	// SAFARI (IOS) popup browser has some severe limitations (javascript disabled, cookies disabled)
-
-	//------------- Setup json -----------
 
 	server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
 		request->redirect(localIPURL);
@@ -415,7 +429,6 @@ void webserverTask(void *parameter) {
 	server.on("/data.json", HTTP_GET, [](AsyncWebServerRequest *request) {	// when client asks for the json data preview file..
 		AsyncResponseStream *response = request->beginResponseStream("application/json");
 		response->addHeader("Cache-Control:", "max-age=5");
-		// response->addHeader("Cache-Control:", "no-store");
 		xSemaphoreTake(jsonDocMutex, 1);			 // ask for control of json doc
 		serializeJson(jsonDataDocument, *response);	 // turn the json document in ram into a normal json file (as a stream of data)
 		xSemaphoreGive(jsonDocMutex);				 // release control of json doc
@@ -445,10 +458,11 @@ void webserverTask(void *parameter) {
 		ESP_LOGI("", "led off Requested");
 	});
 
+	server.on("/favicon.ico", [](AsyncWebServerRequest *request) { request->send(404); });
+
 	// Required for captive portal redirects
 	server.on("/connecttest.txt", [](AsyncWebServerRequest *request) { request->redirect("http://logout.net"); });	// windows 11 captive portal workaround
 	server.on("/wpad.dat", [](AsyncWebServerRequest *request) { request->send(404); });								// Honestly don't understand what this is but a 404 stops win 10 keep calling this repeatedly and panicking the esp32 :)
-	server.on("/favicon.ico", [](AsyncWebServerRequest *request) { request->send(404); });
 
 	// Background responses: Probably not all are Required, but some are. Others might speed things up?
 	// A Tier (commonly used by modern systems)
@@ -459,13 +473,13 @@ void webserverTask(void *parameter) {
 	server.on("/success.txt", [](AsyncWebServerRequest *request) { request->send(200); });					   // firefox captive portal call home
 	server.on("/ncsi.txt", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });			   // windows call home
 
-	server.serveStatic("/", LittleFS, "/").setCacheControl("max-age=86400");  // serve any file on the device when requested (24hr cache limit)
-
 	// B Tier (uncommon)
 	// server.on("/chrome-variations/seed", [](AsyncWebServerRequest *request) { request->send(200); });  // chrome captive portal call home
 	// server.on("/service/update2/json", [](AsyncWebServerRequest *request) { request->send(200); });	   // firefox?
 	// server.on("/chat", [](AsyncWebServerRequest *request) { request->send(404); });					   // No stop asking Whatsapp, there is no internet connection
-	// server.on("/startpage", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });
+	// server.on("/startpage", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });\
+
+	server.serveStatic("/", LittleFS, "/").setCacheControl("max-age=86400");  // serve any file on the device when requested (24hr cache limit)
 
 	server.onNotFound([](AsyncWebServerRequest *request) {
 		request->redirect(localIPURL);
@@ -475,9 +489,9 @@ void webserverTask(void *parameter) {
 		// Serial.print(request->url());
 		// Serial.println(" sent redirect to " + localIPURL + "\n");
 	});
+}
 
-	server.begin();
-
+void connectToOpenWifi() {
 	int numberOfNetworks = WiFi.scanNetworks();
 	if (numberOfNetworks == 0) {
 		ESP_LOGI("", "No networks found.");
@@ -489,6 +503,40 @@ void webserverTask(void *parameter) {
 			}
 		}
 	}
+}
+
+/**
+ * @brief Runs the webserver, all WiFi functions, and sets up NTP servers.
+ *
+ * This task initializes and runs the webserver, handles all WiFi functionality, and sets up NTP servers for time synchronization. It configures the WiFi
+ * mode as an access point and station and sets the IP address, gateway, subnet mask, and DNS server. It also sets up a DNSServer to handle DNS requests and
+ * initializes and starts the SNTP client with the specified NTP servers.
+ *
+ * The webserver serves the following routes:
+ * - "/" redirects to the local IP address.
+ * - "/data.json" returns a JSON representation of the sensor data.
+ * - "/Kea-CO2-Data.csv" returns the Kea-CO2 data file.
+ * - "/yesclear.html" clears the sensor data.
+ * - "/off" turns off the light bar.
+ *
+ * @param[in] parameter The task parameter (unused).
+ */
+void webserverTask(void *parameter) {
+	// Create a DNS server instance
+	DNSServer dnsServer;
+	// Create an AsyncWebServer instance listening on port 80
+	AsyncWebServer server(80);
+
+	initializeNTPServers();
+
+	startSoftAccessPoint(ssid, password, localIP, gatewayIP);
+
+	setUpDNSServer(dnsServer, localIP);
+
+	setUpWebserver(server, localIP);
+	server.begin();
+
+	connectToOpenWifi();
 
 	WiFi.setTxPower(WIFI_POWER_2dBm);
 	ESP_LOGV("WiFi Tx Power Set To:", "%i", (WiFi.getTxPower()));
@@ -497,7 +545,49 @@ void webserverTask(void *parameter) {
 
 	while (true) {
 		dnsServer.processNextRequest();
+		vTaskDelay(DNS_INTERVAL / portTICK_PERIOD_MS);
 	}
+}
+
+/**
+ * @brief  Initializes a the CSV file and adds a header if needed.
+ * This function creates a new CSV file with the given filename and adds a header to it if it doesn't exist
+ * If a file with the same filename already exists and has some data in it, it is left alone.
+ *
+ * @param[in] filename The name of the CSV file.
+ * @return True if the CSV was successfully initialized, false otherwise.
+ */
+bool initializeCsvFile(const char *filename) {
+	// Attempt to open the CSV file
+	File file = LittleFS.open(F(filename), FILE_APPEND, true);
+	int retryCount = 0;
+	while (!file && retryCount < 5) {
+		ESP_LOGE("", "Error opening %s. Retrying...", (filename));
+		file = LittleFS.open(F(filename), FILE_APPEND, true);
+		retryCount++;
+		vTaskDelay(500 / portTICK_PERIOD_MS);
+	}
+
+	if (!file) {
+		ESP_LOGE("", "Unable to open %s. Aborting task.", (CSVLogFilename));
+		return false;
+	}
+
+	// Check if the CSV file already has data
+	bool fileHasData = file.size() > 0;
+
+	// If the file is empty, add the CSV header
+	if (!fileHasData) {
+		// Add CSV header to empty file
+		if (!file.print("TimeStamp(Mins),CO2(PPM),Humidity(%RH),Temperature(DegC)\r\n")) {
+			ESP_LOGE("", "Error writing CSV header to file %s", filename);
+			file.close();
+			return false;
+		}
+	}
+
+	file.close();
+	return true;
 }
 
 /**
@@ -513,31 +603,13 @@ void webserverTask(void *parameter) {
  * @param[in] parameter The task parameter (unused).
  */
 void csvFileManagerTask(void *parameter) {
-	//------------- Setup CSV File ----------------
-	bool dataFullFlag = false;
-	uint8_t retryCount = 0;
-	bool err;
-	File csvDataFile = LittleFS.open(F(CSVLogFilename), FILE_APPEND, true);	 // open if exists CSVLogFilename, create if it doesn't
-	do {
-		err = true;
-		if (csvDataFile) {					// Can I open the file?
-			if (csvDataFile.size() > 25) {	// does it have stuff in it ?
-				err = false;
-			} else {
-				ESP_LOGE("", "%s too small", (CSVLogFilename));
-				if (csvDataFile.print("TimeStamp(Mins),CO2(PPM),Humidity(%RH),Temperature(DegC)\r\n")) {  // Can I add a header?
-					ESP_LOGI("", "Setup %s with Header", (CSVLogFilename));
-					err = false;
-				} else {
-					ESP_LOGE("", "Error Printing to %s", (CSVLogFilename));
-				}
-				csvDataFile.flush();
-			}
-		} else {
-			ESP_LOGE("", "Error Opening %s", (CSVLogFilename));
-		}
-		retryCount++;
-	} while (retryCount < 5 && err == true);
+
+	if (!initializeCsvFile(CSVLogFilename)) {
+		ESP_LOGE("", "Unable to initialize %s. Aborting task.", (CSVLogFilename));
+		vTaskDelete(NULL);
+	}
+
+	File csvDataFile = LittleFS.open(F(CSVLogFilename), FILE_APPEND);
 
 	uint32_t bufferSizeNow = 0;
 	csvDataFile.setBufferSize(512);
@@ -547,52 +619,42 @@ void csvFileManagerTask(void *parameter) {
 		vTaskSuspend(NULL);
 		uint32_t notification = 0;
 		xTaskNotifyWait(0, 65535, &notification, 0);
+
+		// Handle delete file notification
 		if (notification > 0) {
+			ESP_LOGI("", "Received delete file notification for %s", (CSVLogFilename));
 			csvDataFile.close();
 			LittleFS.remove(F(CSVLogFilename));
-			csvDataFile = LittleFS.open(F(CSVLogFilename), FILE_APPEND, true);
-			csvDataFile.print("TimeStamp(Mins),CO2(PPM),Humidity(%RH),Temperature(DegC)\r\n");
-			csvDataFile.flush();
 
-			dataFullFlag = false;
+			if (!initializeCsvFile(CSVLogFilename)) {
+				ESP_LOGE("", "Unable to initialize %s. Aborting task.", (CSVLogFilename));
+				vTaskDelete(NULL);
+			}
+
+			File csvDataFile = LittleFS.open(F(CSVLogFilename), FILE_APPEND);
+
 			bufferSizeNow = 0;
 			csvDataFile.setBufferSize(512);
-			csvDataFilesize = 0;
-			ESP_LOGI("", "%s data cleared", (CSVLogFilename));
+			csvDataFilesize = csvDataFile.size();
 		}
 
-		char csvLine[32];
+		char csvLine[CSV_LINE_MAX_CHARS];
 		if (xQueueReceive(charsForCSVFileQueue, &csvLine, 0)) {
-			// Serial.println(csvLine);
-
 			//----- Append line to CSV File (flush if buffer nearly fully) -----------------
-			if (dataFullFlag == false) {
-				if (csvDataFilesize < MAX_CSV_SIZE_BYTES) {	 // last line of defense for memory leaks
+			if (csvDataFilesize < MAX_CSV_SIZE_BYTES) {	 // last line of defense for memory leaks
+				uint8_t bytesAdded = csvDataFile.println(csvLine);
+				if (bytesAdded > 0) {
+					bufferSizeNow += bytesAdded;
 
-					uint8_t bytesAdded = csvDataFile.println(csvLine);
-					if (bytesAdded > 0) {
-						bufferSizeNow += bytesAdded;
-						// ESP_LOGV("", "added to buffer");
-
-						if (bufferSizeNow > 450) {
-							uint32_t writeStart = millis();
-							csvDataFile.flush();
-							uint32_t writeEnd = millis();
-							csvDataFilesize += bufferSizeNow;
-							bufferSizeNow = 0;
-
-							ESP_LOGV("", "Wrote data in ~%ums, %s is %ikb", (writeEnd - writeStart), CSVLogFilename, (csvDataFilesize / 1000));
-							// Serial.printf("%u,%i\n\r", (writeEnd - writeStart), csvDataFilesize);
-						}
-					} else {
-						ESP_LOGE("", "Error Printing to %s", (CSVLogFilename));
+					if (bufferSizeNow > 450) {
+						csvDataFile.flush();
+						csvDataFilesize += bufferSizeNow;
+						bufferSizeNow = 0;
 					}
 				} else {
-					ESP_LOGE("", "%s is too large", (CSVLogFilename));
-					dataFullFlag = true;
+					ESP_LOGE("", "Error Printing to %s", (CSVLogFilename));
 				}
 			}
-			//-----------------------------------------------
 		}
 	}
 }
@@ -701,12 +763,10 @@ void sensorManagerTask(void *parameter) {
 
 	double CO2, rawTemperature, temperature = 20.0, rawHumidity, humidity = 0.0;
 	double prevCO2 = CO2_MIN, trendCO2 = 0;
-	uint16_t position;
-	uint32_t dataRequested;
+	uint16_t lightbarPosition;
 
 	time_t currentEpoch;
 	time_t prevEpoch;
-	time(&prevEpoch);
 	uint32_t notification;
 
 	bool timeSet = false;
@@ -723,8 +783,8 @@ void sensorManagerTask(void *parameter) {
 			}
 
 			trendCO2 = 0.5 * (CO2 - prevCO2) + (1 - 0.5) * trendCO2;
-			position = mapCO2toPosition(CO2 + trendCO2);
-			xTaskNotify(lightBar, position, eSetValueWithOverwrite);
+			lightbarPosition = mapCO2toPosition(CO2 + trendCO2);
+			xTaskNotify(lightBar, lightbarPosition, eSetValueWithOverwrite);
 
 			rawTemperature -= TEMP_OFFSET;
 
@@ -750,7 +810,7 @@ void sensorManagerTask(void *parameter) {
 			char timeStamp[16];
 			strftime(timeStamp, 16, time_format, &timeinfo);
 
-			char buf[32];  // temp char array for CSV 40000,99,99
+			char buf[CSV_LINE_MAX_CHARS];  // temp char array for CSV 40000,99,99
 			// CO2(PPM),Humidity(%RH),Temperature(DegC)"
 			sprintf(buf, "%s,%4.0f,%2.1f,%2.0f", timeStamp, CO2, humidity, temperature);
 			xQueueSend(charsForCSVFileQueue, &buf, 1000 / portTICK_PERIOD_MS);
@@ -799,8 +859,8 @@ void setup() {
 
 	// Create a queue for storing characters for the CSV file.
 	// Parameters are: maximum number of items in the queue, size of each item in bytes.
-	char buf[32];
-	charsForCSVFileQueue = xQueueCreate(3, sizeof(buf));
+	char csvLine[CSV_LINE_MAX_CHARS];
+	charsForCSVFileQueue = xQueueCreate(3, sizeof(csvLine));
 
 	// Create a queue for storing CO2, humidity, and temperature data
 	// Parameters are: maximum number of items in the queue, size of each item in bytes.

@@ -56,6 +56,47 @@ The device can download a spreadsheet of CO2, temperature, and humidity data. Th
 
 ### Wiring
 ![Schematic](/images/Schematic.png)
+| Name               | Designator         | Footprint                         | Quantity | Manufacturer Part        | Manufacturer        |
+|--------------------|--------------------|-----------------------------------|----------|--------------------------|---------------------|
+| CR1220             | BT1                | CR1220                            | 1        | BS-12-B2AA002            | MYOUNG(美阳)          |
+| 4.7uF              | C1                 | C0402                             | 1        | CL05A475MP5NRNC          | SAMSUNG(三星)         |
+| 10uF               | C2-C18             | C0402                             | 7        | CL05A106MQ5NUNC          | SAMSUNG(三星)         |
+| 100nF              | C3-58              | C0402                             | 31       | CL05B104KO5NNNC          | SAMSUNG(三星)         |
+| 100uF              | C7                 | CAP-SMD_L3.5-W2.8                 | 1        | TAJB107K006RNJ           | Kyocera AVX         |
+| 22uF               | C10                | C0603                             | 1        | CL10A226MQ8NRNC          | SAMSUNG(三星)         |
+| 22pF               | C21,C22,C23,C33    | C0402                             | 4        | 0402CG220J500NT          | FH(风华)              |
+| 47uF               | C25,C27,C60        | C0805                             | 3        | CL21A476MQYNNNE          | SAMSUNG(三星)         |
+| 1nF                | C31,C61            | C0402                             | 2        | 0402B102K500NT           | FH(风华)              |
+| 1N4148             | D2                 | SOD-323_L1.8-W1.3-LS2.5-RD        | 1        | 1N4148WS                 | CJ(江苏长电/长晶)         |
+| ZMM3V3             | D3                 | LL-34_L3.5-W1.5-RD                | 1        | ZMM3V3-M                 | ST(先科)              |
+| ZMM5V6             | D4                 | LL-34_L3.5-W1.5-RD                | 1        | ZMM5V6-M                 | ST(先科)              |
+| Ferrite Bead 800ma | FB1                | FB0805                            | 1        | GZ2012D101TF             | Sunlord(顺络)         |
+| XC6220B331MR-G     | LDO1               | SOT-25-5_L3.0-W1.8-P0.95-LS3.0-BR | 1        | XC6220B331MR-G           | TOREX(特瑞仕)          |
+| XC6206P332MR       | LDO2               | SOT-23-3_L2.9-W1.6-P1.90-LS2.8-BR | 1        | XC6206P332MR             | TOREX(特瑞仕)          |
+| WS2812B            | LED1-32            | LED-SMD_XL-3535RGBC-WS2812B       | 22       | XL-3535RGBC-WS2812B      | XINGLIGHT(成兴光)      |
+| RTC                | LED33              | LED0603-RD                        | 1        | KT-0603R                 |                     |
+| 3V3_SCD4x          | LED36              | LED0603-RD                        | 1        | 19-217/GHC-YR1S2/3T      | EVERLIGHT(亿光)       |
+| 3V3                | LED103             | LED0603-RD                        | 1        | 19-217/GHC-YR1S2/3T      | EVERLIGHT(亿光)       |
+| RX                 | LED104             | LED0603-RD                        | 1        | 19-213/Y2C-CQ2R2L/3T(CY) | EVERLIGHT(亿光)       |
+| TX                 | LED105             | LED0603-RD                        | 1        | 19-213/Y2C-CQ2R2L/3T(CY) | EVERLIGHT(亿光)       |
+| IO2                | LED106             | LED0603-RD                        | 1        | KT-0603R                 |                     |
+| SN74LV1T34DBVR     | LS1                | SOT-23-5_L3.0-W1.7-P0.95-LS2.8-BR | 1        | SN74LV1T34DBVR           | TI(德州仪器)            |
+| 100kΩ              | R1,R5,R14,R15      | R0402                             | 4        | 0402WGF1003TCE           | UNI-ROYAL(厚声)       |
+| 100Ω               | R2,R4              | R0402                             | 2        | 0402WGF1000TCE           | UNI-ROYAL(厚声)       |
+| 10kΩ               | R3,R6,R7,R8,R9,R25 | R0402                             | 6        | 0402WGF1002TCE           | UNI-ROYAL(厚声)       |
+| 200kΩ              | R10,R16            | R0402                             | 2        | 0402WGF2003TCE           | UNI-ROYAL(厚声)       |
+| 200Ω               | R11                | R0402                             | 1        | 0402WGF2000TCE           | UNI-ROYAL(厚声)       |
+| 1MΩ                | R13                | R0402                             | 1        | 0402WGF1004TCE           | UNI-ROYAL(厚声)       |
+| 330Ω               | R17                | R0402                             | 1        | 0402WGF3300TCE           | UNI-ROYAL(厚声)       |
+| 5.1kΩ              | R18,R19            | R0402                             | 2        | 0402WGF5101TCE           | UNI-ROYAL(厚声)       |
+| 4.7kΩ              | R29,R30            | R0402                             | 2        | 0402WGF4701TCE           | UNI-ROYAL(厚声)       |
+| RESET DATA         | SW1                | KEY-SMD_4P-L4.2-W3.2-P2.20-LS4.6  | 1        | SKRPACE010               | ALPSALPINE(阿尔卑斯阿尔派) |
+| LTR303 Lux         | U4                 | SOT-363_L2.0-W1.3-P0.65-LS2.1-BL  | 1        | LTR-303ALS-01            | LITEON(光宝)          |
+| PCF8563T RTC       | U6                 | SOIC-8_L5.0-W4.0-P1.27-LS6.0-BL   | 1        | PCF8563T/5,518           | NXP(恩智浦)            |
+| 918-418K2024S40004 | USBC1              | USB-C-SMD_918-418K2023S40013-1    | 1        | 918-418K2024S40004       | 精拓金                 |
+| 32.768kHz          | X1                 | FC-135R_L3.2-W1.5                 | 1        | Q13FC1350000400          | EPSON(爱普生)          |
+
+
 
 
 ## ✌️ Other
