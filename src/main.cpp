@@ -12,6 +12,15 @@
  * @license HIPPOCRATIC LICENSE Version 3.0
  */
 
+//    __ __           ______          ___        
+//   / //_/__ ___ _  / __/ /___ _____/ (_)__  ___
+//  / ,< / -_) _ `/ _\ \/ __/ // / _  / / _ \(_-<
+// /_/|_|\__/\_,_/ /___/\__/\_,_/\_,_/_/\___/___/
+//                  __      _        _  __             ____           __             __
+//   __ _  ___ ____/ /__   (_)__    / |/ /__ _    __  /_  / ___ ___ _/ /__ ____  ___/ /
+//  /  ' \/ _ `/ _  / -_) / / _ \  /    / -_) |/|/ /   / /_/ -_) _ `/ / _ `/ _ \/ _  / 
+// /_/_/_/\_,_/\_,_/\__/ /_/_//_/ /_/|_/\__/|__,__/   /___/\__/\_,_/_/\_,_/_//_/\_,_/  
+                                                                                    
 #include <Arduino.h>
 
 // Wifi, Webserver and DNS
@@ -338,10 +347,8 @@ void lightBarTask(void *parameter) {
 	uint16_t targetPosition = LIGHTBAR_MAX_POSITION / 3;  // The target position value for the light bar, ranging from 0 to LIGHTBAR_MAX_POSITION.
 	uint16_t position = 0;								  // The current position value for the light bar, ranging from 0 to LIGHTBAR_MAX_POSITION.
 
-	bool updatePixels = false;	// Flag indicating if the pixel brightness needs to be updated.
-
 	while (true) {
-		updatePixels = updateBrightness(lightSensor, brightness, targetBrightness);
+		bool updatePixels = updateBrightness(lightSensor, brightness, targetBrightness);
 
 		for (uint8_t i = 0; i < 20; i++) {	// get light reading every 20 frames (600ms at 30ms frames)
 			xTaskNotifyWait(0, 65535, &rawPosition, 0);
@@ -372,9 +379,9 @@ void initializeNTPServers() {
 
 	// Set the SNTP operating mode to polling, and configure the NTP servers
 	sntp_setoperatingmode(SNTP_OPMODE_POLL);
-	sntp_setservername(0, (char *)ntpServer1);
-	sntp_setservername(1, (char *)ntpServer2);
-	sntp_setservername(2, (char *)ntpServer3);
+	sntp_setservername(0, ntpServer1);
+	sntp_setservername(1, ntpServer2);
+	sntp_setservername(2, ntpServer3);
 	sntp_init();
 }
 
@@ -670,7 +677,6 @@ void csvFileManagerTask(void *parameter) {
  * @param[in] parameter The task parameter (unused).
  */
 void jsonFileManagerTask(void *parameter) {
-	const char *time_format = "%H:%M:%S";
 	time_t currentEpoch, prevEpoch = 0;
 	uint8_t CO2Index = 0, tempIndex = 0, humidityIndex = 0;
 	uint32_t notification;
