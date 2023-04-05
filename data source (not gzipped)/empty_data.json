@@ -31,16 +31,5 @@
         ],
         "color": "#FE5F55",
         "y_title": "Temperature (Deg C)"
-    },
-    {
-        "name": "Light Level",
-        "data": [
-            [
-                0,
-                null
-            ]
-        ],
-        "color": "#8B6220",
-        "y_title": "Lux (lm/m^2)"
     }
 ]
