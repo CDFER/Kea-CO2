@@ -879,7 +879,7 @@ void setup() {
 	// Parameters are: task function, name for debugging, stack size, parameters to pass to task function, priority, pointer to task handle.
 	xTaskCreate(webserverTask, "webserverTask", 17060, NULL, 1, &webserver);
 	xTaskCreate(sensorManagerTask, "sensorManagerTask", 3800, NULL, 1, &sensorManager);
-	xTaskCreate(csvFileManagerTask, "csvFileManagerTask", 3060, NULL, 0, &csvFileManager);
+	xTaskCreate(csvFileManagerTask, "csvFileManagerTask", 4000, NULL, 0, &csvFileManager);
 	xTaskCreate(jsonFileManagerTask, "jsonFileManagerTask", 21000, NULL, 0, &jsonFileManager);
 }
 
