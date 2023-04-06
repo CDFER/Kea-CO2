@@ -128,7 +128,7 @@ TaskHandle_t sensorManager = NULL;	  // A handle to the task that reads sensor d
 TaskHandle_t webserver = NULL;		  // A handle to the task that runs the web server.
 TaskHandle_t jsonFileManager = NULL;  // A handle to the task that writes JSON data to a file.
 
-QueueHandle_t charsForCSVFileQueue;	 // A queue that holds a character array of sensor data.
+QueueHandle_t charsForCSVFileQueue;	 // A queue of character arrays which contain human readable sensor data.
 									 // This is used to communicate between the sensor manager and the CSV file manager tasks.
 
 QueueHandle_t jsonDataQueue;  // A queue of data points in doubles.
@@ -317,10 +317,10 @@ void lightBarTestRGB(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> &ligh
  * It also updates the position of the lighting effect on the LED strip based on a target position, which can be set by calling the xTaskNotify() function.
  * The position is represented as a value between 0 and LIGHTBAR_MAX_POSITION, which corresponds to the maximum number of pixels on the LED strip.
  *
- * The lighting effect itself is a gradient that blends from green at the bottom of the strip to red at the top, and can be updated with varying brightness levels.
+ * The lighting effect itself is a gradient that blends from green at the bottom of the strip to red at the top, and can be updated with a varying postion on that gradient.
  * The position of the effect on the strip can be updated by setting the target position with xTaskNotify().
  *
- * If the target position is set outside the valid range, the function will flash the LED strip in red to indicate a high CO2 level.
+ * If the target position is set above LIGHTBAR_MAX_POSITION, the function will flash the LED strip in red to indicate a high CO2 level.
  *
  * @param[in] parameter The task parameter (unused).
  */
@@ -504,7 +504,7 @@ void connectToOpenWifi() {
 		ESP_LOGI("", "No networks found.");
 	} else {
 		for (int i = 0; i < numberOfNetworks; ++i) {
-			if (WiFi.encryptionType(i) == WIFI_AUTH_OPEN && WiFi.RSSI(i) > -60) {
+			if (WiFi.encryptionType(i) == WIFI_AUTH_OPEN && WiFi.RSSI(i) > -60) { //RSSI is wifi signal strength
 				ESP_LOGI("", "Found Open Network.");
 				WiFi.begin(WiFi.SSID(i).c_str());
 			}
@@ -516,8 +516,8 @@ void connectToOpenWifi() {
  * @brief Runs the webserver, all WiFi functions, and sets up NTP servers.
  *
  * This task initializes and runs the webserver, handles all WiFi functionality, and sets up NTP servers for time synchronization. It configures the WiFi
- * mode as an access point and station and sets the IP address, gateway, subnet mask, and DNS server. It also sets up a DNSServer to handle DNS requests and
- * initializes and starts the SNTP client with the specified NTP servers.
+ * mode as an access point and sets the IP address, gateway and subnet mask. It also sets up a DNSServer to handle DNS requests and
+ * initializes the SNTP client with the specified NTP servers.
  *
  * The webserver serves the following routes:
  * - "/" redirects to the local IP address.
@@ -558,7 +558,7 @@ void webserverTask(void *parameter) {
 
 /**
  * @brief  Initializes a the CSV file and adds a header if needed.
- * This function creates a new CSV file with the given filename and adds a header to it if it doesn't exist
+ * This function if needed, creates a new CSV file with the given filename and adds a header to it if it doesn't exist
  * If a file with the same filename already exists and has some data in it, it is left alone.
  *
  * @param[in] filename The name of the CSV file.
@@ -598,9 +598,9 @@ bool initializeCsvFile(const char *filename) {
 }
 
 /**
- * @brief Takes a CSV queue and adds it to the CSV file in flash storage.
- * This function opens a CSV file named CSVLogFilename, either by appending to an existing file or creating a new one. If the file exists and has data, it is
- * checked to ensure it contains a valid CSV header. If the file is empty, a CSV header is added. The function then sets up the CSV file buffer and waits for
+ * @brief Takes a queue of char arrays and adds it to the CSV file in flash storage.
+ * This function opens a CSV file named CSVLogFilename, either by appending to an existing file or creating a new one.
+ * If the file is empty, a CSV header is added. The function then sets up the CSV file buffer and waits for
  * notifications.
  *
  * When a delete file notification is received, the CSV file is closed, removed, and re-opened with a new header.
@@ -667,11 +667,11 @@ void csvFileManagerTask(void *parameter) {
 }
 
 /**
- * @brief Takes a queue of data and adds it to the JSON data document in RAM
+ * @brief Takes a queue of data points and adds it to the JSON data document in RAM
  * This function initializes the JSON document and continuously waits for a
  * notification. When a notification is received and the JSON data queue contains
- * three elements, it retrieves the elements and adds them to the JSON document in
- * RAM. The function also updates the index for each data type (CO2, humidity, and temperature)
+ * three elements, it retrieves the elements and adds them to the JSON document.
+ * The function also updates the index for each data type (CO2, humidity, and temperature)
  * to ensure that the data is stored in a circular buffer. The function also acquires and
  * releases a mutex to ensure that the JSON document is accessed safely in a multithreaded environment.
  * @param[in] parameter The task parameter (unused).
@@ -811,10 +811,10 @@ void sensorManagerTask(void *parameter) {
 		if (prevEpoch + CSV_RECORD_INTERVAL_SECONDS <= currentEpoch) {
 			prevEpoch += CSV_RECORD_INTERVAL_SECONDS;
 
-			struct tm timeinfo;
-			localtime_r(&currentEpoch, &timeinfo);
+			struct tm timeInfo;
+			localtime_r(&currentEpoch, &timeInfo);
 			char timeStamp[16];
-			strftime(timeStamp, 16, time_format, &timeinfo);
+			strftime(timeStamp, 16, time_format, &timeInfo);
 
 			char buf[CSV_LINE_MAX_CHARS];  // temp char array for CSV 40000,99,99
 			// CO2(PPM),Humidity(%RH),Temperature(DegC)"
