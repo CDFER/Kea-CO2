@@ -23,7 +23,13 @@
                                                                                     
 #include <Arduino.h>
 
-// Wifi, Webserver and DNS
+
+// -----------------------------------------
+//
+//    External Libraries
+// 		for Wifi, Webserver and DNS
+//
+// -----------------------------------------
 #include <ArduinoJson.h>
 #include <DNSServer.h>
 #include <WiFi.h>
@@ -187,7 +193,7 @@ void initJson() {
 
 /**
  * @brief Convert CO2 level in parts per million to a position integer for a light bar display.
- * This function maps the input CO2 level to a position integer between 0 and 255 (number of positions for each pixel).
+ * This function maps the input CO2 level to a position integer between 0 and LIGHTBAR_MAX_POSITION (each pixel has a position range of 0-255).
  * The mapping is linear and is based on the CO2_MIN, CO2_MAX, and LIGHTBAR_MAX_POSITION constants.
  * @param inputCO2 CO2 level in parts per million.
  * @return uint16_t The position integer for the light bar display.
@@ -206,7 +212,7 @@ uint16_t mapCO2toPosition(double inputCO2) {
  *
  * @param[in] parameter The task parameter (unused).
  */
-void wipeLightBar(void *parameter) {
+void clearLightBar(void *parameter) {
 	NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> lightBar(PIXEL_COUNT, PIXEL_DATA_PIN);  // uses i2s silicon remapped to any pin to drive led data
 
 	lightBar.Begin();
@@ -224,8 +230,8 @@ void initializeLightBar(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> &l
 bool updateBrightness(LTR303 &lightSensor, uint8_t &brightness, uint8_t &targetBrightness) {
 	double lux;
 	if (lightSensor.getApproximateLux(lux)) {
-		if (lux < BRIGHTNESS_FACTOR * MAX_BRIGHTNESS) {
-			targetBrightness = (uint16_t)(lux / BRIGHTNESS_FACTOR);
+		if (lux < (BRIGHTNESS_FACTOR * MAX_BRIGHTNESS)) {
+			targetBrightness = (uint8_t)(lux / BRIGHTNESS_FACTOR);
 		} else {
 			targetBrightness = MAX_BRIGHTNESS;
 		}
@@ -325,6 +331,7 @@ void lightBarTestRGB(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> &ligh
  * @param[in] parameter The task parameter (unused).
  */
 void lightBarTask(void *parameter) {
+	// Create the the lightbar object
 	NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> lightBar(PIXEL_COUNT, PIXEL_DATA_PIN);  // uses i2s silicon remapped to any pin to drive led data
 
 	initializeLightBar(lightBar);
@@ -333,10 +340,10 @@ void lightBarTask(void *parameter) {
 	Wire1.begin(WIRE1_SDA_PIN, WIRE1_SCL_PIN, 500000);	// tested to be 380khz irl (400khz per data sheet)
 	lightSensor.begin(GAIN_48X, EXPOSURE_400ms, true, Wire1);
 
-#ifdef PRODUCTION_TEST
-	lightSensor.isConnected(Wire1, &Serial);
-	lightBarTestRGB(lightBar);
-#endif
+	#ifdef PRODUCTION_TEST
+		lightSensor.isConnected(Wire1, &Serial);
+		lightBarTestRGB(lightBar);
+	#endif
 
 	double lux;	 // The measured illumination level in lux.
 
@@ -351,7 +358,7 @@ void lightBarTask(void *parameter) {
 		bool updatePixels = updateBrightness(lightSensor, brightness, targetBrightness);
 
 		for (uint8_t i = 0; i < 20; i++) {	// get light reading every 20 frames (600ms at 30ms frames)
-			xTaskNotifyWait(0, 65535, &rawPosition, 0);
+			xTaskNotifyWait(0, 0xFFFF, &rawPosition, 0);
 			handleTargetPositionNotification(targetPosition, rawPosition);
 
 			if (targetPosition < LIGHTBAR_MAX_POSITION) {				   // if position is in valid range
@@ -461,7 +468,7 @@ void setUpWebserver(AsyncWebServer &server, const IPAddress &localIP) {
 	server.on("/off", HTTP_GET, [](AsyncWebServerRequest *request) {
 		request->redirect(localIPURL);
 		vTaskDelete(lightBar);
-		xTaskCreate(wipeLightBar, "wipeLightBar", 5000, NULL, 1, NULL);
+		xTaskCreate(clearLightBar, "clearLightBar", 5000, NULL, 1, NULL);
 		ESP_LOGI("", "led off Requested");
 	});
 
