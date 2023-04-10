@@ -12,15 +12,15 @@
  * @license HIPPOCRATIC LICENSE Version 3.0
  */
 
-//    __ __           ______          ___        
+//    __ __           ______          ___
 //   / //_/__ ___ _  / __/ /___ _____/ (_)__  ___
 //  / ,< / -_) _ `/ _\ \/ __/ // / _  / / _ \(_-<
 // /_/|_|\__/\_,_/ /___/\__/\_,_/\_,_/_/\___/___/
 //                  __      _        _  __             ____           __             __
 //   __ _  ___ ____/ /__   (_)__    / |/ /__ _    __  /_  / ___ ___ _/ /__ ____  ___/ /
-//  /  ' \/ _ `/ _  / -_) / / _ \  /    / -_) |/|/ /   / /_/ -_) _ `/ / _ `/ _ \/ _  / 
-// /_/_/_/\_,_/\_,_/\__/ /_/_//_/ /_/|_/\__/|__,__/   /___/\__/\_,_/_/\_,_/_//_/\_,_/  
-                                                                                    
+//  /  ' \/ _ `/ _  / -_) / / _ \  /    / -_) |/|/ /   / /_/ -_) _ `/ / _ `/ _ \/ _  /
+// /_/_/_/\_,_/\_,_/\__/ /_/_//_/ /_/|_/\__/|__,__/   /___/\__/\_,_/_/\_,_/_//_/\_,_/
+
 #include <Arduino.h>
 
 // Wifi, Webserver and DNS
@@ -159,7 +159,7 @@ float roundToXDP(uint8_t decimalPlaces, double value) {	 // rounds a number to x
  * @note This function assumes that the jsonDataDocument has already been initialized elsewhere in the program.
  * @see jsonDataDocument
  */
-void initJson() {
+void initializeJson() {
 	xSemaphoreTake(jsonDocMutex, portMAX_DELAY);  // ask for control of json doc
 
 	jsonDataDocument.clear();
@@ -402,6 +402,7 @@ void startSoftAccessPoint(const char *ssid, const char *password, const IPAddres
 
 	// Set the WiFi mode to access point and station
 	WiFi.mode(WIFI_MODE_APSTA);
+	// WiFi.mode(WIFI_MODE_AP);
 
 	// Define the subnet mask for the WiFi network
 	const IPAddress subnetMask(255, 255, 255, 0);
@@ -449,7 +450,7 @@ void setUpWebserver(AsyncWebServer &server, const IPAddress &localIP) {
 
 	server.on("/yesclear.html", HTTP_GET, [](AsyncWebServerRequest *request) {	// when client asks for the json data preview file..
 		request->redirect(localIPURL);
-		initJson();
+		initializeJson();
 		xTaskNotify(jsonFileManager, 1, eSetValueWithOverwrite);
 		vTaskResume(jsonFileManager);
 		xTaskNotify(csvFileManager, 1, eSetValueWithOverwrite);
@@ -490,11 +491,13 @@ void setUpWebserver(AsyncWebServer &server, const IPAddress &localIP) {
 
 	server.onNotFound([](AsyncWebServerRequest *request) {
 		request->redirect(localIPURL);
-		// Serial.print("onnotfound ");
-		// Serial.print(request->host());	// This gives some insight into whatever was being requested on the serial monitor
-		// Serial.print(" ");
-		// Serial.print(request->url());
-		// Serial.println(" sent redirect to " + localIPURL + "\n");
+#ifdef ENV = "verboseDebug"
+		Serial.print("onnotfound ");
+		Serial.print(request->host());	// This gives some insight into whatever was being requested on the serial monitor
+		Serial.print(" ");
+		Serial.print(request->url());
+		Serial.println(" sent redirect to " + localIPURL + "\n");
+#endif
 	});
 }
 
@@ -504,7 +507,7 @@ void connectToOpenWifi() {
 		ESP_LOGI("", "No networks found.");
 	} else {
 		for (int i = 0; i < numberOfNetworks; ++i) {
-			if (WiFi.encryptionType(i) == WIFI_AUTH_OPEN && WiFi.RSSI(i) > -60) { //RSSI is wifi signal strength
+			if (WiFi.encryptionType(i) == WIFI_AUTH_OPEN && WiFi.RSSI(i) > -60) {  // RSSI is wifi signal strength
 				ESP_LOGI("", "Found Open Network.");
 				WiFi.begin(WiFi.SSID(i).c_str());
 			}
@@ -546,6 +549,7 @@ void webserverTask(void *parameter) {
 	connectToOpenWifi();
 
 	WiFi.setTxPower(WIFI_POWER_2dBm);
+	// WiFi.setTxPower(WIFI_POWER_19_5dBm);
 	ESP_LOGV("WiFi Tx Power Set To:", "%i", (WiFi.getTxPower()));
 
 	ESP_LOGV("", "Startup complete by %ims", (millis()));
@@ -610,7 +614,6 @@ bool initializeCsvFile(const char *filename) {
  * @param[in] parameter The task parameter (unused).
  */
 void csvFileManagerTask(void *parameter) {
-
 	if (!initializeCsvFile(CSVLogFilename)) {
 		ESP_LOGE("", "Unable to initialize %s. Aborting task.", (CSVLogFilename));
 		vTaskDelete(NULL);
@@ -683,7 +686,7 @@ void jsonFileManagerTask(void *parameter) {
 	double CO2, temperature, humidity;
 	double prevCO2 = 0, prevTemperature = 0, prevHumidity = 0;
 
-	initJson();
+	initializeJson();
 
 	while (true) {
 		vTaskSuspend(NULL);
