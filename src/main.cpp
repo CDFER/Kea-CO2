@@ -271,6 +271,7 @@ void updateLightBar(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> &light
 	lightBar.SetPixelColor(mixingPixel - 1, RgbColor(0));						// set one pixel above the mixing pixel to black
 	lightBar.SetPixelColor(mixingPixel, baseColor.Dim(mixingPixelBrightness));	// set mixing pixel
 
+
 	if (mixingPixel < LAST_PIXEL) {
 		lightBar.ClearTo(baseColor, mixingPixel + 1, LAST_PIXEL);  // fill solid color to the bottom of the bar
 	}
@@ -475,7 +476,7 @@ void setUpWebserver(AsyncWebServer &server, const IPAddress &localIP) {
 		xTaskCreate(clearLightBar, "clearLightBar", 5000, NULL, 1, NULL);
 		ESP_LOGI("", "led off Requested");
 	});
-
+  
 	server.on("/favicon.ico", [](AsyncWebServerRequest *request) { request->send(404); });
 
 	// Required for captive portal redirects
