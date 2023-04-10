@@ -49,14 +49,6 @@
                     <div class="label">Temp</div>
                 </div>
             </a>
-            <a href="#Light">
-                <div class="item" onclick="select(this)">
-                    <div class="activeIndicator">
-                        <img class="icon" src="light.svg">
-                    </div>
-                    <div class="label">Light</div>
-                </div>
-            </a>
         </div>
         <div class="content">
             <div class="card" id="download">
@@ -64,14 +56,14 @@
                     <h1>Data</h1>
                     <p>Download the data as a csv file (Can be imported into Excel or Google Sheets).</p>
                     <div class="flex-container">
-                        <div class = "flex-box">
+                        <div class="flex-box">
                             <a href="Kea-CO2-Data.csv" download="Kea-CO2-Data.csv">
-                                <div class="cardButton"  style = "background:#355B33;">Download Data</div>
+                                <div class="cardButton" style="background:#355B33;">Download Data</div>
                             </a>
                         </div>
-                        <div class = "flex-box">
+                        <div class="flex-box">
                             <a href="clear.html">
-                                <div class="cardButton" style = "background:#5b3c33;">Clear All Data</div>
+                                <div class="cardButton" style="background:#5b3c33;">Clear All Data</div>
                             </a>
                         </div>
                     </div>
@@ -115,18 +107,27 @@
                     <p>Sensor Accuracy: &plusmn;0.8&deg;C</p>
                 </div>
             </div>
-            <div class="card" id="Light">
-                <div class="chart" id="chartLight"></div>
+            <div class="card">
+                <div class="cardContent" style="padding:16px; ">
+                    <h1>LightBar</h1>
+                    <div class="flex-container">
+                        <div class="flex-box">
+                            <a href="off">
+                                <div class="cardButton" style="background:#5b3c33;">Turn Off</div>
+                            </a>
+                        </div>
+                        <!-- <div class="flex-box">
+                            <a href="on">
+                                <div class="cardButton" style="background:#355B33;">Turn On</div>
+                            </a>
+                        </div> -->
+                    </div>
+                </div>
+            </div>
+            <div class="card">
                 <div class="cardContent">
-                    <h1>Light Level</h1>
-                    <p>
-                        Lux (symbol: lx) is the SI unit of illuminance per unit area. It is equal to one lumen per
-                        square metre.
-                        The Sensor features 50 Hz and 60 Hz (Mains Power) flicker noise rejection.
-                    </p>
-                    <br></br>
-                    <p>Sensor Range: 0 - 120,000lx</p>
-                    <p>Sensor Resolution: &plusmn;0.01lx</p>
+                    <p>Made by KeaStudios</p>
+                    <p>In Aotearoa, New Zealand</p>
                 </div>
             </div>
         </div>
@@ -163,35 +164,24 @@
             curve: 'smooth'
         },
         xaxis: {
-            tickAmount: 5,
-            axisTicks: {
-                show: true,
-            },
-            axisBorder: {
-                show: true,
-            },
-            type: 'numeric',
-            title: {
-                text: 'Minutes',
-                style: {
-                    fontWeight: 300,
-                },
-            },
-        },
+            type: 'datetime',
+            labels: {
+                datetimeUTC: false,
+            }
+        }
     };
 
     let charts = []
     charts.push(new ApexCharts(document.querySelector("#chartCO2"), defaultChartOptions));
     charts.push(new ApexCharts(document.querySelector("#chartHumidity"), defaultChartOptions));
     charts.push(new ApexCharts(document.querySelector("#chartTemperature"), defaultChartOptions));
-    charts.push(new ApexCharts(document.querySelector("#chartLight"), defaultChartOptions));
 
     charts.forEach(
         chart => { chart.render() }
     )
     updateData();
 
-    setInterval(updateData, 30000);
+    setInterval(updateData, 5000);
 
     function updateData() {
         fetch('data.json')
@@ -201,7 +191,7 @@
                     dataSeries.data.sort((a, b) => a[0] - b[0])
                     let i = dataSeries.data[0][0]
                     dataSeries.data.forEach((datapoint) => {
-                       datapoint[0] = datapoint[0] - i
+                        datapoint[0] = datapoint[0] * 1000
                     })
                     charts[index].updateSeries([dataSeries])
                     charts[index].updateOptions({ yaxis: { title: { text: dataSeries.y_title, style: { fontWeight: 300 } }, }, })
@@ -210,10 +200,10 @@
     }
 
     function clearData() {
-            var xhttp = new XMLHttpRequest();
-            xhttp.open("GET", "/clear", true);
-            xhttp.send();
-        }
+        var xhttp = new XMLHttpRequest();
+        xhttp.open("GET", "/clear", true);
+        xhttp.send();
+    }
 
 </script>
 
