@@ -355,6 +355,7 @@ void lightBarTask(void *parameter) {
 	uint16_t position = 0;								  // The current position value for the light bar, ranging from 0 to LIGHTBAR_MAX_POSITION.
 
 	while (true) {
+		// TODO refactor to remove for loop, and use if around the updateBrightness() call
 		bool updatePixels = updateBrightness(lightSensor, brightness, targetBrightness);
 
 		for (uint8_t i = 0; i < 20; i++) {	// get light reading every 20 frames (600ms at 30ms frames)
@@ -378,7 +379,7 @@ void lightBarTask(void *parameter) {
 	}
 }
 
-void initializeNTPServers() {
+void initializeNTPClient() {
 	// Define the NTP servers to be used for time synchronization
 	const char *ntpServer1 = "pool.ntp.org";
 	const char *ntpServer2 = "time.nist.gov";
@@ -402,14 +403,13 @@ void setUpDNSServer(DNSServer &dnsServer, const IPAddress &localIP) {
 }
 
 void startSoftAccessPoint(const char *ssid, const char *password, const IPAddress &localIP, const IPAddress &gatewayIP) {
-// Define the maximum number of clients that can connect to the server
-#define MAX_CLIENTS 4
-// Define the WiFi channel to be used (channel 6 in this case)
-#define WIFI_CHANNEL 6
+	// Define the maximum number of clients that can connect to the server
+	#define MAX_CLIENTS 4
+	// Define the WiFi channel to be used (channel 6 in this case)
+	#define WIFI_CHANNEL 6
 
 	// Set the WiFi mode to access point and station
 	WiFi.mode(WIFI_MODE_APSTA);
-	// WiFi.mode(WIFI_MODE_AP);
 
 	// Define the subnet mask for the WiFi network
 	const IPAddress subnetMask(255, 255, 255, 0);
@@ -438,7 +438,7 @@ void setUpWebserver(AsyncWebServer &server, const IPAddress &localIP) {
 	// SAFARI (IOS) popup browser has some severe limitations (javascript disabled, cookies disabled)
 
 	server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-		request->redirect(localIPURL);
+		request->redirect(localIPURL); 
 	});
 
 	server.on("/data.json", HTTP_GET, [](AsyncWebServerRequest *request) {	// when client asks for the json data preview file..
@@ -450,18 +450,21 @@ void setUpWebserver(AsyncWebServer &server, const IPAddress &localIP) {
 		request->send(response);
 	});
 
-	server.on("/Kea-CO2-Data.csv", HTTP_GET, [](AsyncWebServerRequest *request) {  // when client asks for the json data preview file..
+	server.on("/Kea-CO2-Data.csv", HTTP_GET, [](AsyncWebServerRequest *request) {  
 		AsyncWebServerResponse *response = request->beginResponse(LittleFS, "/Kea-CO2-Data.csv", String(), true);
 		request->send(response);
 	});
 
-	server.on("/yesclear.html", HTTP_GET, [](AsyncWebServerRequest *request) {	// when client asks for the json data preview file..
-		request->redirect(localIPURL);
-		initializeJson();
-		xTaskNotify(jsonFileManager, 1, eSetValueWithOverwrite);
-		vTaskResume(jsonFileManager);
-		xTaskNotify(csvFileManager, 1, eSetValueWithOverwrite);
-		vTaskResume(csvFileManager);
+	server.on("/yesclear.html", HTTP_GET, [](AsyncWebServerRequest *request) {	
+		request->redirect(localIPURL); // return the user back to the home page
+
+		initializeJson();  // clears the data file
+
+		xTaskNotify(jsonFileManager, 1, eSetValueWithOverwrite);  // notification value of 1 instructs jsonFileManager to clear data
+		vTaskResume(jsonFileManager); // jsonFileManager is usually left in paused state until needed, resuming it here. 
+
+		xTaskNotify(csvFileManager, 1, eSetValueWithOverwrite);  // notification value of 1 instructs csvFileManager to clear data
+		vTaskResume(csvFileManager); // csvFileManager is usually left in paused state until needed, resuming it here. 
 
 		ESP_LOGI("", "data clear Requested");
 	});
@@ -477,34 +480,35 @@ void setUpWebserver(AsyncWebServer &server, const IPAddress &localIP) {
 
 	// Required for captive portal redirects
 	server.on("/connecttest.txt", [](AsyncWebServerRequest *request) { request->redirect("http://logout.net"); });	// windows 11 captive portal workaround
-	server.on("/wpad.dat", [](AsyncWebServerRequest *request) { request->send(404); });								// Honestly don't understand what this is but a 404 stops win 10 keep calling this repeatedly and panicking the esp32 :)
+	server.on("/wpad.dat",        [](AsyncWebServerRequest *request) { request->send(404); });						// Honestly don't understand what this is but a 404 stops win 10 keep calling this repeatedly and panicking the esp32 :)
 
 	// Background responses: Probably not all are Required, but some are. Others might speed things up?
 	// A Tier (commonly used by modern systems)
-	server.on("/generate_204", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });		   // android captive portal redirect
-	server.on("/redirect", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });			   // microsoft redirect
-	server.on("/hotspot-detect.html", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });  // apple call home
-	server.on("/canonical.html", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });	   // firefox captive portal call home
-	server.on("/success.txt", [](AsyncWebServerRequest *request) { request->send(200); });					   // firefox captive portal call home
-	server.on("/ncsi.txt", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });			   // windows call home
+	server.on("/generate_204",        [](AsyncWebServerRequest *request) { request->redirect(localIPURL); }); // android captive portal redirect
+	server.on("/redirect",            [](AsyncWebServerRequest *request) { request->redirect(localIPURL); }); // microsoft redirect
+	server.on("/hotspot-detect.html", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); }); // apple call home
+	server.on("/canonical.html",      [](AsyncWebServerRequest *request) { request->redirect(localIPURL); }); // firefox captive portal call home
+	server.on("/success.txt",         [](AsyncWebServerRequest *request) { request->send(200); });			  // firefox captive portal call home
+	server.on("/ncsi.txt",            [](AsyncWebServerRequest *request) { request->redirect(localIPURL); }); // windows call home
 
 	// B Tier (uncommon)
-	// server.on("/chrome-variations/seed", [](AsyncWebServerRequest *request) { request->send(200); });  // chrome captive portal call home
-	// server.on("/service/update2/json", [](AsyncWebServerRequest *request) { request->send(200); });	   // firefox?
-	// server.on("/chat", [](AsyncWebServerRequest *request) { request->send(404); });					   // No stop asking Whatsapp, there is no internet connection
-	// server.on("/startpage", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });\
+	// server.on("/chrome-variations/seed", [](AsyncWebServerRequest *request) { request->send(200); }); // chrome captive portal call home
+	// server.on("/service/update2/json",   [](AsyncWebServerRequest *request) { request->send(200); }); // firefox?
+	// server.on("/chat",                   [](AsyncWebServerRequest *request) { request->send(404); }); // No stop asking Whatsapp, there is no internet connection
+	// server.on("/startpage",              [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });
 
 	server.serveStatic("/", LittleFS, "/").setCacheControl("max-age=86400");  // serve any file on the device when requested (24hr cache limit)
 
 	server.onNotFound([](AsyncWebServerRequest *request) {
 		request->redirect(localIPURL);
-#ifdef ENV = "verboseDebug"
-		Serial.print("onnotfound ");
-		Serial.print(request->host());	// This gives some insight into whatever was being requested on the serial monitor
-		Serial.print(" ");
-		Serial.print(request->url());
-		Serial.println(" sent redirect to " + localIPURL + "\n");
-#endif
+		
+		#ifdef ENV = "verboseDebug"
+			Serial.print("onnotfound ");
+			Serial.print(request->host());	// This gives some insight into whatever was being requested on the serial monitor
+			Serial.print(" ");
+			Serial.print(request->url());
+			Serial.println(" sent redirect to " + localIPURL + "\n");
+		#endif
 	});
 }
 
@@ -514,7 +518,9 @@ void connectToOpenWifi() {
 		ESP_LOGI("", "No networks found.");
 	} else {
 		for (int i = 0; i < numberOfNetworks; ++i) {
-			if (WiFi.encryptionType(i) == WIFI_AUTH_OPEN && WiFi.RSSI(i) > -60) {  // RSSI is wifi signal strength
+			bool isOpen = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN);
+			bool hasStrongSignal = (WiFi.RSSI(i) > -60); // RSSI is wifi signal strength
+			if ( isOpen && hasStrongSignal ) {  
 				ESP_LOGI("", "Found Open Network.");
 				WiFi.begin(WiFi.SSID(i).c_str());
 			}
@@ -525,9 +531,14 @@ void connectToOpenWifi() {
 /**
  * @brief Runs the webserver, all WiFi functions, and sets up NTP servers.
  *
- * This task initializes and runs the webserver, handles all WiFi functionality, and sets up NTP servers for time synchronization. It configures the WiFi
- * mode as an access point and sets the IP address, gateway and subnet mask. It also sets up a DNSServer to handle DNS requests and
- * initializes the SNTP client with the specified NTP servers.
+ * This task 
+ *  - initializes and runs the webserver, 
+ *  - handles all WiFi functionality, 
+ *  - sets up SNTP client for NTP time synchronization
+ * 
+ * It configures the WiFi mode as an access point and sets the IP address, gateway and subnet mask. 
+ * It also sets up a DNSServer to handle DNS requests and initializes the SNTP client to use the 
+ * specified NTP servers.
  *
  * The webserver serves the following routes:
  * - "/" redirects to the local IP address.
@@ -544,7 +555,7 @@ void webserverTask(void *parameter) {
 	// Create an AsyncWebServer instance listening on port 80
 	AsyncWebServer server(80);
 
-	initializeNTPServers();
+	initializeNTPClient();
 
 	startSoftAccessPoint(ssid, password, localIP, gatewayIP);
 
@@ -556,10 +567,9 @@ void webserverTask(void *parameter) {
 	connectToOpenWifi();
 
 	WiFi.setTxPower(WIFI_POWER_2dBm);
-	// WiFi.setTxPower(WIFI_POWER_19_5dBm);
 	ESP_LOGV("WiFi Tx Power Set To:", "%i", (WiFi.getTxPower()));
 
-	ESP_LOGV("", "Startup complete by %ims", (millis()));
+	ESP_LOGV("", "Startup completed by %ims", (millis()));
 
 	while (true) {
 		dnsServer.processNextRequest();
