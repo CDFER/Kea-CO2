@@ -23,7 +23,6 @@
 
 #include <Arduino.h>
 
-
 // -----------------------------------------
 //
 //    External Libraries
@@ -271,7 +270,6 @@ void updateLightBar(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> &light
 	lightBar.SetPixelColor(mixingPixel - 1, RgbColor(0));						// set one pixel above the mixing pixel to black
 	lightBar.SetPixelColor(mixingPixel, baseColor.Dim(mixingPixelBrightness));	// set mixing pixel
 
-
 	if (mixingPixel < LAST_PIXEL) {
 		lightBar.ClearTo(baseColor, mixingPixel + 1, LAST_PIXEL);  // fill solid color to the bottom of the bar
 	}
@@ -341,10 +339,10 @@ void lightBarTask(void *parameter) {
 	Wire1.begin(WIRE1_SDA_PIN, WIRE1_SCL_PIN, 500000);	// tested to be 380khz irl (400khz per data sheet)
 	lightSensor.begin(GAIN_48X, EXPOSURE_400ms, true, Wire1);
 
-	#ifdef PRODUCTION_TEST
-		lightSensor.isConnected(Wire1, &Serial);
-		lightBarTestRGB(lightBar);
-	#endif
+#ifdef PRODUCTION_TEST
+	lightSensor.isConnected(Wire1, &Serial);
+	lightBarTestRGB(lightBar);
+#endif
 
 	double lux;	 // The measured illumination level in lux.
 
@@ -404,10 +402,10 @@ void setUpDNSServer(DNSServer &dnsServer, const IPAddress &localIP) {
 }
 
 void startSoftAccessPoint(const char *ssid, const char *password, const IPAddress &localIP, const IPAddress &gatewayIP) {
-	// Define the maximum number of clients that can connect to the server
-	#define MAX_CLIENTS 4
-	// Define the WiFi channel to be used (channel 6 in this case)
-	#define WIFI_CHANNEL 6
+// Define the maximum number of clients that can connect to the server
+#define MAX_CLIENTS 4
+// Define the WiFi channel to be used (channel 6 in this case)
+#define WIFI_CHANNEL 6
 
 	// Set the WiFi mode to access point and station
 	WiFi.mode(WIFI_MODE_APSTA);
@@ -439,7 +437,7 @@ void setUpWebserver(AsyncWebServer &server, const IPAddress &localIP) {
 	// SAFARI (IOS) popup browser has some severe limitations (javascript disabled, cookies disabled)
 
 	server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-		request->redirect(localIPURL); 
+		request->redirect(localIPURL);
 	});
 
 	server.on("/data.json", HTTP_GET, [](AsyncWebServerRequest *request) {	// when client asks for the json data preview file..
@@ -451,21 +449,21 @@ void setUpWebserver(AsyncWebServer &server, const IPAddress &localIP) {
 		request->send(response);
 	});
 
-	server.on("/Kea-CO2-Data.csv", HTTP_GET, [](AsyncWebServerRequest *request) {  
+	server.on("/Kea-CO2-Data.csv", HTTP_GET, [](AsyncWebServerRequest *request) {
 		AsyncWebServerResponse *response = request->beginResponse(LittleFS, "/Kea-CO2-Data.csv", String(), true);
 		request->send(response);
 	});
 
-	server.on("/yesclear.html", HTTP_GET, [](AsyncWebServerRequest *request) {	
-		request->redirect(localIPURL); // return the user back to the home page
+	server.on("/yesclear.html", HTTP_GET, [](AsyncWebServerRequest *request) {
+		request->redirect(localIPURL);	// return the user back to the home page
 
 		initializeJson();  // clears the data file
 
 		xTaskNotify(jsonFileManager, 1, eSetValueWithOverwrite);  // notification value of 1 instructs jsonFileManager to clear data
-		vTaskResume(jsonFileManager); // jsonFileManager is usually left in paused state until needed, resuming it here. 
+		vTaskResume(jsonFileManager);							  // jsonFileManager is usually left in paused state until needed, resuming it here.
 
-		xTaskNotify(csvFileManager, 1, eSetValueWithOverwrite);  // notification value of 1 instructs csvFileManager to clear data
-		vTaskResume(csvFileManager); // csvFileManager is usually left in paused state until needed, resuming it here. 
+		xTaskNotify(csvFileManager, 1, eSetValueWithOverwrite);	 // notification value of 1 instructs csvFileManager to clear data
+		vTaskResume(csvFileManager);							 // csvFileManager is usually left in paused state until needed, resuming it here.
 
 		ESP_LOGI("", "data clear Requested");
 	});
@@ -476,21 +474,21 @@ void setUpWebserver(AsyncWebServer &server, const IPAddress &localIP) {
 		xTaskCreate(clearLightBar, "clearLightBar", 5000, NULL, 1, NULL);
 		ESP_LOGI("", "led off Requested");
 	});
-  
+
 	server.on("/favicon.ico", [](AsyncWebServerRequest *request) { request->send(404); });
 
 	// Required for captive portal redirects
 	server.on("/connecttest.txt", [](AsyncWebServerRequest *request) { request->redirect("http://logout.net"); });	// windows 11 captive portal workaround
-	server.on("/wpad.dat",        [](AsyncWebServerRequest *request) { request->send(404); });						// Honestly don't understand what this is but a 404 stops win 10 keep calling this repeatedly and panicking the esp32 :)
+	server.on("/wpad.dat", [](AsyncWebServerRequest *request) { request->send(404); });								// Honestly don't understand what this is but a 404 stops win 10 keep calling this repeatedly and panicking the esp32 :)
 
 	// Background responses: Probably not all are Required, but some are. Others might speed things up?
 	// A Tier (commonly used by modern systems)
-	server.on("/generate_204",        [](AsyncWebServerRequest *request) { request->redirect(localIPURL); }); // android captive portal redirect
-	server.on("/redirect",            [](AsyncWebServerRequest *request) { request->redirect(localIPURL); }); // microsoft redirect
-	server.on("/hotspot-detect.html", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); }); // apple call home
-	server.on("/canonical.html",      [](AsyncWebServerRequest *request) { request->redirect(localIPURL); }); // firefox captive portal call home
-	server.on("/success.txt",         [](AsyncWebServerRequest *request) { request->send(200); });			  // firefox captive portal call home
-	server.on("/ncsi.txt",            [](AsyncWebServerRequest *request) { request->redirect(localIPURL); }); // windows call home
+	server.on("/generate_204", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });		   // android captive portal redirect
+	server.on("/redirect", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });			   // microsoft redirect
+	server.on("/hotspot-detect.html", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });  // apple call home
+	server.on("/canonical.html", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });	   // firefox captive portal call home
+	server.on("/success.txt", [](AsyncWebServerRequest *request) { request->send(200); });					   // firefox captive portal call home
+	server.on("/ncsi.txt", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });			   // windows call home
 
 	// B Tier (uncommon)
 	// server.on("/chrome-variations/seed", [](AsyncWebServerRequest *request) { request->send(200); }); // chrome captive portal call home
@@ -502,14 +500,14 @@ void setUpWebserver(AsyncWebServer &server, const IPAddress &localIP) {
 
 	server.onNotFound([](AsyncWebServerRequest *request) {
 		request->redirect(localIPURL);
-		
-		#ifdef ENV = "verboseDebug"
-			Serial.print("onnotfound ");
-			Serial.print(request->host());	// This gives some insight into whatever was being requested on the serial monitor
-			Serial.print(" ");
-			Serial.print(request->url());
-			Serial.println(" sent redirect to " + localIPURL + "\n");
-		#endif
+
+#ifdef TEST_WEBSERVER
+		Serial.print("onnotfound ");
+		Serial.print(request->host());	// This gives some insight into whatever was being requested on the serial monitor
+		Serial.print(" ");
+		Serial.print(request->url());
+		Serial.println(" sent redirect to " + localIPURL + "\n");
+#endif
 	});
 }
 
@@ -520,8 +518,8 @@ void connectToOpenWifi() {
 	} else {
 		for (int i = 0; i < numberOfNetworks; ++i) {
 			bool isOpen = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN);
-			bool hasStrongSignal = (WiFi.RSSI(i) > -60); // RSSI is wifi signal strength
-			if ( isOpen && hasStrongSignal ) {  
+			bool hasStrongSignal = (WiFi.RSSI(i) > -60);  // RSSI is wifi signal strength
+			if (isOpen && hasStrongSignal) {
 				ESP_LOGI("", "Found Open Network.");
 				WiFi.begin(WiFi.SSID(i).c_str());
 			}
@@ -532,13 +530,13 @@ void connectToOpenWifi() {
 /**
  * @brief Runs the webserver, all WiFi functions, and sets up NTP servers.
  *
- * This task 
- *  - initializes and runs the webserver, 
- *  - handles all WiFi functionality, 
+ * This task
+ *  - initializes and runs the webserver,
+ *  - handles all WiFi functionality,
  *  - sets up SNTP client for NTP time synchronization
- * 
- * It configures the WiFi mode as an access point and sets the IP address, gateway and subnet mask. 
- * It also sets up a DNSServer to handle DNS requests and initializes the SNTP client to use the 
+ *
+ * It configures the WiFi mode as an access point and sets the IP address, gateway and subnet mask.
+ * It also sets up a DNSServer to handle DNS requests and initializes the SNTP client to use the
  * specified NTP servers.
  *
  * The webserver serves the following routes:
@@ -777,23 +775,26 @@ void sensorManagerTask(void *parameter) {
 	const char *time_format = "%y/%m/%d,%H:%M";
 
 	Wire.begin(WIRE_SDA_PIN, WIRE_SCL_PIN, 100000);
-#ifdef PRODUCTION_TEST
-	co2.isConnected(Wire, &Serial);
-#endif
-	co2.begin(Wire);
-	co2.startPeriodicMeasurement();
 
 	rtc.begin(Wire);
 	rtc.syncToSystem();
 	setenv("TZ", time_zone, 1);
 	tzset();
 
+#ifdef PRODUCTION_TEST
+	if (co2.isConnected(Wire, &Serial)) {
+		co2.setSelfCalibrationMode(false);
+	}
+#endif
+	co2.begin(Wire);
+	co2.startPeriodicMeasurement();
+
 	double CO2, rawTemperature, temperature = 20.0, rawHumidity, humidity = 0.0;
 	double prevCO2 = CO2_MIN, trendCO2 = 0;
 	uint16_t lightbarPosition;
 
 	time_t currentEpoch;
-	time_t prevEpoch;
+	time_t prevEpoch = 0;
 	uint32_t notification;
 
 	bool timeSet = false;
