@@ -92,9 +92,9 @@
 // Define the time zone, SSID, and password for the WiFi network,
 // as well as the record intervals for the CSV and JSON files
 const char *time_zone = "NZST-12NZDT,M9.5.0,M4.1.0/3";	// Time zone (see https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv)
-const char *password = "";				// Password of the WiFi access point (leave blank for no password)
-#define CSV_RECORD_INTERVAL_SECONDS 60	// Record interval (in seconds) for the CSV file
-#define JSON_RECORD_INTERVAL_SECONDS 1	// Record interval (in seconds) for the JSON file
+const char *password = "";								// Password of the WiFi access point (leave blank for no password)
+#define CSV_RECORD_INTERVAL_SECONDS 60					// Record interval (in seconds) for the CSV file
+#define JSON_RECORD_INTERVAL_SECONDS 1					// Record interval (in seconds) for the JSON file
 
 // Define the filename, maximum size, and location for the CSV log file,
 // as well as the IP and URL for the web server
@@ -348,7 +348,7 @@ void lightBarTask(void *parameter) {
 	uint8_t targetBrightness = 255;	 // The target brightness value for the light bar, ranging from 0 to 255.
 	uint8_t brightness = 255;		 // The current brightness value for the light bar, ranging from 0 to 255.
 
-	uint32_t rawPosition = 0;							  // The raw position value for the light bar, filled from task notification
+	uint32_t rawPosition;								  // The raw position value for the light bar, filled from task notification
 	uint16_t targetPosition = LIGHTBAR_MAX_POSITION / 3;  // The target position value for the light bar, ranging from 0 to LIGHTBAR_MAX_POSITION.
 	uint16_t position = 0;								  // The current position value for the light bar, ranging from 0 to LIGHTBAR_MAX_POSITION.
 
@@ -357,8 +357,10 @@ void lightBarTask(void *parameter) {
 		bool updatePixels = updateBrightness(lightSensor, brightness, targetBrightness);
 
 		for (uint8_t i = 0; i < 20; i++) {	// get light reading every 20 frames (600ms at 30ms frames)
-			xTaskNotifyWait(0, 0xFFFF, &rawPosition, 0);
-			handleTargetPositionNotification(targetPosition, rawPosition);
+			if (xTaskNotifyWait(0, 0xFFFF, &rawPosition, 0) == pdTRUE) {
+				handleTargetPositionNotification(targetPosition, rawPosition);
+				// Serial.println(rawPosition);
+			}
 
 			if (targetPosition < LIGHTBAR_MAX_POSITION) {				   // if position is in valid range
 				if (position != targetPosition || updatePixels == true) {  // only update leds when something has changed
@@ -678,7 +680,7 @@ void csvFileManagerTask(void *parameter) {
 
 				if (bytesAdded > 0) {
 					bufferSizeNow += bytesAdded;
-					//Serial.println(bufferSizeNow);
+					// Serial.println(bufferSizeNow);
 
 					if (bufferSizeNow > 128 || csvDataFilesize < 512) {
 						csvDataFile.flush();
@@ -799,7 +801,7 @@ void sensorManagerTask(void *parameter) {
 #endif
 
 	double CO2, rawTemperature, temperature = 20.0, rawHumidity, humidity = 0.0;
-	double prevCO2 = CO2_MIN, trendCO2 = 0;
+	double prevCO2 = 0, trendCO2 = 0;
 	uint16_t lightbarPosition;
 
 	time_t currentEpoch;
@@ -818,7 +820,7 @@ void sensorManagerTask(void *parameter) {
 		}
 
 		if (co2.readMeasurement(CO2, rawTemperature, rawHumidity) == 0) {
-			if (prevCO2 == 0.0) {
+			if (prevCO2 == 0) {
 				prevCO2 = CO2;
 			}
 
