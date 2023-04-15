@@ -92,10 +92,9 @@
 // Define the time zone, SSID, and password for the WiFi network,
 // as well as the record intervals for the CSV and JSON files
 const char *time_zone = "NZST-12NZDT,M9.5.0,M4.1.0/3";	// Time zone (see https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv)
-const char *ssid = "Kea-CO2";							// Name of the WiFi access point (the SSID cannot have a space)
-const char *password = "";								// Password of the WiFi access point (leave blank for no password)
-#define CSV_RECORD_INTERVAL_SECONDS 60					// Record interval (in seconds) for the CSV file
-#define JSON_RECORD_INTERVAL_SECONDS 1					// Record interval (in seconds) for the JSON file
+const char *password = "";				// Password of the WiFi access point (leave blank for no password)
+#define CSV_RECORD_INTERVAL_SECONDS 60	// Record interval (in seconds) for the CSV file
+#define JSON_RECORD_INTERVAL_SECONDS 1	// Record interval (in seconds) for the JSON file
 
 // Define the filename, maximum size, and location for the CSV log file,
 // as well as the IP and URL for the web server
@@ -401,7 +400,7 @@ void setUpDNSServer(DNSServer &dnsServer, const IPAddress &localIP) {
 	dnsServer.start(53, "*", localIP);
 }
 
-void startSoftAccessPoint(const char *ssid, const char *password, const IPAddress &localIP, const IPAddress &gatewayIP) {
+void startSoftAccessPoint(const char *password, const IPAddress &localIP, const IPAddress &gatewayIP) {
 // Define the maximum number of clients that can connect to the server
 #define MAX_CLIENTS 4
 // Define the WiFi channel to be used (channel 6 in this case)
@@ -415,6 +414,13 @@ void startSoftAccessPoint(const char *ssid, const char *password, const IPAddres
 
 	// Configure the soft access point with a specific IP and subnet mask
 	WiFi.softAPConfig(localIP, gatewayIP, subnetMask);
+
+	const char *ssid;
+	uint8_t mac[6];
+	char macStr[18] = {0};
+	esp_read_mac(mac, ESP_MAC_WIFI_STA);
+	sprintf(macStr, "Kea-CO2-%02X", mac[5]);
+	ssid = macStr;
 
 	// Start the soft access point with the given ssid, password, channel, max number of clients
 	WiFi.softAP(ssid, password, WIFI_CHANNEL, 0, MAX_CLIENTS);
@@ -556,7 +562,7 @@ void webserverTask(void *parameter) {
 
 	initializeNTPClient();
 
-	startSoftAccessPoint(ssid, password, localIP, gatewayIP);
+	startSoftAccessPoint(password, localIP, gatewayIP);
 
 	setUpDNSServer(dnsServer, localIP);
 
@@ -606,7 +612,7 @@ bool initializeCsvFile(const char *filename) {
 	// If the file is empty, add the CSV header
 	if (!fileHasData) {
 		// Add CSV header to empty file
-		if (!file.print("TimeStamp(Mins),CO2(PPM),Humidity(%RH),Temperature(DegC)\r\n")) {
+		if (!file.print("Date, Time, CO2(PPM), Humidity(%RH), Temperature(DegC)\r\n")) {
 			ESP_LOGE("", "Error writing CSV header to file %s", filename);
 			file.close();
 			return false;
@@ -638,7 +644,7 @@ void csvFileManagerTask(void *parameter) {
 	File csvDataFile = LittleFS.open(F(CSVLogFilename), FILE_APPEND);
 
 	uint32_t bufferSizeNow = 0;
-	csvDataFile.setBufferSize(512);
+	csvDataFile.setBufferSize(256);
 	uint32_t csvDataFilesize = csvDataFile.size();
 
 	while (true) {
@@ -657,25 +663,28 @@ void csvFileManagerTask(void *parameter) {
 				vTaskDelete(NULL);
 			}
 
-			File csvDataFile = LittleFS.open(F(CSVLogFilename), FILE_APPEND);
+			csvDataFile = LittleFS.open(F(CSVLogFilename), FILE_APPEND);
 
 			bufferSizeNow = 0;
-			csvDataFile.setBufferSize(512);
+			csvDataFile.setBufferSize(256);
 			csvDataFilesize = csvDataFile.size();
 		}
 
 		char csvLine[CSV_LINE_MAX_CHARS];
-		if (xQueueReceive(charsForCSVFileQueue, &csvLine, 0)) {
+		if (xQueueReceive(charsForCSVFileQueue, &csvLine, 0) == pdTRUE) {
 			//----- Append line to CSV File (flush if buffer nearly fully) -----------------
 			if (csvDataFilesize < MAX_CSV_SIZE_BYTES) {	 // last line of defense for memory leaks
 				uint8_t bytesAdded = csvDataFile.println(csvLine);
+
 				if (bytesAdded > 0) {
 					bufferSizeNow += bytesAdded;
+					//Serial.println(bufferSizeNow);
 
-					if (bufferSizeNow > 450) {
+					if (bufferSizeNow > 128 || csvDataFilesize < 512) {
 						csvDataFile.flush();
 						csvDataFilesize += bufferSizeNow;
 						bufferSizeNow = 0;
+						ESP_LOGI("", "%s Flushed to Flash Storage", (CSVLogFilename));
 					}
 				} else {
 					ESP_LOGE("", "Error Printing to %s", (CSVLogFilename));
@@ -781,28 +790,31 @@ void sensorManagerTask(void *parameter) {
 	setenv("TZ", time_zone, 1);
 	tzset();
 
-#ifdef PRODUCTION_TEST
-	if (co2.isConnected(Wire, &Serial)) {
-		co2.setSelfCalibrationMode(false);
-	}
-#endif
 	co2.begin(Wire);
-	co2.startPeriodicMeasurement();
+
+#ifdef PRODUCTION_TEST
+	co2.isConnected(Wire, &Serial);
+	co2.setCalibrationMode(false);
+	co2.saveSettings();
+#endif
 
 	double CO2, rawTemperature, temperature = 20.0, rawHumidity, humidity = 0.0;
 	double prevCO2 = CO2_MIN, trendCO2 = 0;
 	uint16_t lightbarPosition;
 
 	time_t currentEpoch;
-	time_t prevEpoch = 0;
+	time(&currentEpoch);
+	time_t prevEpoch = currentEpoch;
 	uint32_t notification;
 
 	bool timeSet = false;
 
+	co2.startPeriodicMeasurement();
+
 	while (true) {
 		vTaskDelay(4700 / portTICK_PERIOD_MS);	// chill while scd40 gets new data
 		while (co2.isDataReady() == false) {
-			vTaskDelay(10 / portTICK_PERIOD_MS);
+			vTaskDelay(30 / portTICK_PERIOD_MS);
 		}
 
 		if (co2.readMeasurement(CO2, rawTemperature, rawHumidity) == 0) {
@@ -840,20 +852,21 @@ void sensorManagerTask(void *parameter) {
 
 			char buf[CSV_LINE_MAX_CHARS];  // temp char array for CSV 40000,99,99
 			// CO2(PPM),Humidity(%RH),Temperature(DegC)"
-			sprintf(buf, "%s,%4.0f,%2.1f,%2.0f", timeStamp, CO2, humidity, temperature);
+			sprintf(buf, "%s,%4.0f,%2.0f,%2.1f", timeStamp, CO2, humidity, temperature);
 			xQueueSend(charsForCSVFileQueue, &buf, 1000 / portTICK_PERIOD_MS);
+			Serial.println(buf);
 
 			vTaskResume(csvFileManager);
 		}
 
-		if (timeSet == false && sntp_getreachability(0) + sntp_getreachability(1) + sntp_getreachability(2) > 0) {
+		if (timeSet == false && (sntp_getreachability(0) + sntp_getreachability(1) + sntp_getreachability(2) > 0)) {
 			timeSet = true;
 			rtc.syncToRtc();
 			WiFi.disconnect();
-			time_t epoch;
+
 			struct tm gmt;
-			time(&epoch);
-			gmtime_r(&epoch, &gmt);
+			time(&prevEpoch);
+			gmtime_r(&prevEpoch, &gmt);
 			Serial.println(&gmt, "\n\rGMT Time Set: %A, %B %d %Y %H:%M:%S\n\r");
 		}
 	}
@@ -880,11 +893,6 @@ void setup() {
 	Serial.printf("%s-%d\n\r", ESP.getChipModel(), ESP.getChipRevision());
 #endif
 
-	// Initialize LittleFS (ESP32 Storage) and format it if it fails to mount.
-	if (LittleFS.begin(true) == false) {
-		ESP_LOGE("", "Error mounting LittleFS (Even with Format on Fail)");
-	}
-
 	// Create a queue for storing characters for the CSV file.
 	// Parameters are: maximum number of items in the queue, size of each item in bytes.
 	char csvLine[CSV_LINE_MAX_CHARS];
@@ -896,6 +904,19 @@ void setup() {
 
 	// Create a mutex for controlling access to the JSON document used for storing data for the webserver.
 	jsonDocMutex = xSemaphoreCreateMutex();
+
+	// Initialize LittleFS (ESP32 Storage) and format it if it fails to mount.
+	if (LittleFS.begin(true) == false) {
+		ESP_LOGE("", "Error mounting LittleFS (Even with Format on Fail)");
+	}
+
+#ifdef PRODUCTION_TEST
+	LittleFS.remove(F(CSVLogFilename));
+#endif
+
+	if (LittleFS.exists("/index.html.gz") == false) {
+		ESP_LOGE("", "index.html.gz doesn't exist");
+	}
 
 	// Create tasks for the webserver, sensor manager, CSV file manager, and JSON file manager.
 	// Parameters are: task function, name for debugging, stack size, parameters to pass to task function, priority, pointer to task handle.
