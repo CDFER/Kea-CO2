@@ -12,14 +12,14 @@
  * @license HIPPOCRATIC LICENSE Version 3.0
  */
 
-//    __ __           ______          ___
-//   / //_/__ ___ _  / __/ /___ _____/ (_)__  ___
-//  / ,< / -_) _ `/ _\ \/ __/ // / _  / / _ \(_-<
-// /_/|_|\__/\_,_/ /___/\__/\_,_/\_,_/_/\___/___/
-//                  __      _        _  __             ____           __             __
-//   __ _  ___ ____/ /__   (_)__    / |/ /__ _    __  /_  / ___ ___ _/ /__ ____  ___/ /
-//  /  ' \/ _ `/ _  / -_) / / _ \  /    / -_) |/|/ /   / /_/ -_) _ `/ / _ `/ _ \/ _  /
-// /_/_/_/\_,_/\_,_/\__/ /_/_//_/ /_/|_/\__/|__,__/   /___/\__/\_,_/_/\_,_/_//_/\_,_/
+ //    __ __           ______          ___
+ //   / //_/__ ___ _  / __/ /___ _____/ (_)__  ___
+ //  / ,< / -_) _ `/ _\ \/ __/ // / _  / / _ \(_-<
+ // /_/|_|\__/\_,_/ /___/\__/\_,_/\_,_/_/\___/___/
+ //                  __      _        _  __             ____           __             __
+ //   __ _  ___ ____/ /__   (_)__    / |/ /__ _    __  /_  / ___ ___ _/ /__ ____  ___/ /
+ //  /  ' \/ _ `/ _  / -_) / / _ \  /    / -_) |/|/ /   / /_/ -_) _ `/ / _ `/ _ \/ _  /
+ // /_/_/_/\_,_/\_,_/\__/ /_/_//_/ /_/|_/\__/|__,__/   /___/\__/\_,_/_/\_,_/_//_/\_,_/
 
 #include <Arduino.h>
 
@@ -82,6 +82,16 @@
 #define FRAME_TIME 30		 // Milliseconds between frames (30ms = ~33.3fps maximum)
 #define BRIGHTNESS_FACTOR 3	 // Lux/BRIGHTNESS_FACTOR = LED brightness
 #define MAX_BRIGHTNESS 200	 // Maximum brightness setting for the WS2812B LEDs
+enum lightBarModes {
+	idleFrame,
+	lightBarScale,
+	flashRed,
+	purplePulse,
+	greenPulse,
+	rgbTest,
+	errorRed,
+	off
+};
 
 // -----------------------------------------
 //
@@ -91,8 +101,8 @@
 
 // Define the time zone, SSID, and password for the WiFi network,
 // as well as the record intervals for the CSV and JSON files
-const char *time_zone = "NZST-12NZDT,M9.5.0,M4.1.0/3";	// Time zone (see https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv)
-const char *password = "";								// Password of the WiFi access point (leave blank for no password)
+const char* time_zone = "NZST-12NZDT,M9.5.0,M4.1.0/3";	// Time zone (see https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv)
+const char* password = "";								// Password of the WiFi access point (leave blank for no password)
 #define CSV_RECORD_INTERVAL_SECONDS 60					// Record interval (in seconds) for the CSV file
 #define JSON_RECORD_INTERVAL_SECONDS 1					// Record interval (in seconds) for the JSON file
 
@@ -113,6 +123,8 @@ const String localIPURL = "http://4.3.2.1/index.html";	// URL to the web server 
 
 #define LIGHTBAR_MAX_POSITION PIXEL_COUNT * 255	 // the maximum light bar position
 #define LAST_PIXEL PIXEL_COUNT - 1				 // last Addressable Pixel to write data to (starts at pixel 0)
+#define low8Bits(w) ((uint8_t)((w)))			 // returns bits 1 - 8 of a 32bit variable
+#define high16Bits(w) ((uint16_t)((w) >> 16))	 // returns bits 17 - 32 of a 32bit variable
 
 // -----------------------------------------
 //
@@ -122,7 +134,7 @@ const String localIPURL = "http://4.3.2.1/index.html";	// URL to the web server 
 
 // Allocate the JSON document size in RAM https://arduinojson.org/v6/assistant to compute the size.
 DynamicJsonDocument jsonDataDocument(23520);  // The size of the JSON document in bytes (about 23KB).
-											  // This is used to store the data that will be sent to the web server.
+// This is used to store the data that will be sent to the web server.
 
 #define JSON_DATA_POINTS_MAX 128  // The maximum number of data points to store in the JSON document.
 
@@ -133,13 +145,13 @@ TaskHandle_t webserver = NULL;		  // A handle to the task that runs the web serv
 TaskHandle_t jsonFileManager = NULL;  // A handle to the task that writes JSON data to a file.
 
 QueueHandle_t charsForCSVFileQueue;	 // A queue of character arrays which contain human readable sensor data.
-									 // This is used to communicate between the sensor manager and the CSV file manager tasks.
+// This is used to communicate between the sensor manager and the CSV file manager tasks.
 
 QueueHandle_t jsonDataQueue;  // A queue of data points in doubles.
-							  // This is used to communicate between the sensor manager and the JSON file manager tasks.
+// This is used to communicate between the sensor manager and the JSON file manager tasks.
 
 SemaphoreHandle_t jsonDocMutex;	 // A semaphore used to ensure that only one task accesses the JSON document at a time.
-								 // This is used to prevent race conditions where two tasks try to access the document at the same time.
+// This is used to prevent race conditions where two tasks try to access the document at the same time.
 
 /**
  * @brief Rounds a double to a float with x decimal places
@@ -204,28 +216,14 @@ uint16_t mapCO2toPosition(double inputCO2) {
 	}
 }
 
-/**
- * @brief @brief Set Light Bar to Black
- * This function sets the Light Bar to black by initializing the NeoPixelBus object and showing it. It then deletes itself.
- *
- * @param[in] parameter The task parameter (unused).
- */
-void clearLightBar(void *parameter) {
-	NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> lightBar(PIXEL_COUNT, PIXEL_DATA_PIN);  // uses i2s silicon remapped to any pin to drive led data
-
-	lightBar.Begin();
-	lightBar.Show();  // init to black
-	vTaskDelete(NULL);
-}
-
 // Initializes the LED strip to black.
-void initializeLightBar(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> &lightBar) {
+void initializeLightBar(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod>& lightBar) {
 	lightBar.Begin();
 	lightBar.Show();
 }
 
 // Reads the light sensor and adjusts the brightness of the LED strip based on the light level.
-bool updateBrightness(LTR303 &lightSensor, uint8_t &brightness, uint8_t &targetBrightness) {
+bool updateBrightness(LTR303& lightSensor, uint8_t& brightness, uint8_t& targetBrightness) {
 	double lux;
 	if (lightSensor.getApproximateLux(lux)) {
 		if (lux < (BRIGHTNESS_FACTOR * MAX_BRIGHTNESS)) {
@@ -245,7 +243,7 @@ bool updateBrightness(LTR303 &lightSensor, uint8_t &brightness, uint8_t &targetB
 }
 
 // Updates the position of the lighting effect on the LED strip based on a target position.
-void updatePosition(uint16_t &position, const uint16_t &targetPosition) {
+void updatePosition(uint16_t& position, const uint16_t& targetPosition) {
 	if (targetPosition < LIGHTBAR_MAX_POSITION) {  // if position is in valid range
 		if (position > targetPosition) {
 			position--;
@@ -257,7 +255,7 @@ void updatePosition(uint16_t &position, const uint16_t &targetPosition) {
 }
 
 // Updates the lighting effect on the LED strip.
-void updateLightBar(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> &lightBar, const uint16_t &position, const uint8_t &brightness) {
+void updateLightBar(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod>& lightBar, const uint16_t& position, const uint8_t& brightness) {
 	uint8_t redGreenMix = position / PIXEL_COUNT;	 // 0 - 255 version of position
 	uint16_t mixingPixel = position / 255;			 // which pixel is the position at
 	uint8_t mixingPixelBrightness = position % 255;	 // what is the local position of the pixel
@@ -277,58 +275,33 @@ void updateLightBar(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> &light
 }
 
 // Handles the target position notification and sets the target position.
-void handleTargetPositionNotification(uint16_t &targetPosition, uint32_t &rawPosition) {
-	if (rawPosition > 0) {
-		if (rawPosition < 65535) {	// 16-bit int overflow protection
-			targetPosition = (uint16_t)rawPosition;
-		}
+void handleTargetPositionNotification(uint16_t& targetPosition, uint32_t rawNotification, lightBarModes& lightBarMode) {
+	uint16_t rawPosition = high16Bits(rawNotification);
+	if (rawPosition != 0) {
+		targetPosition = rawPosition;
 	}
-}
 
-// Flash all pixels red to indicate CO2 level over CO2_MAX
-void flashLightBarRed(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> &lightBar) {
-	lightBar.ClearTo(RgbColor(0));
-	lightBar.Show();
-	vTaskDelay(500 / portTICK_PERIOD_MS);
+	lightBarModes rawMode = static_cast<lightBarModes>(low8Bits(rawNotification));
 
-	lightBar.ClearTo(RgbColor(255, 0, 0));
-	lightBar.Show();
-	vTaskDelay(500 / portTICK_PERIOD_MS);
-}
-
-// Flash all pixels red, green, blue to test all wiring and config is correct
-void lightBarTestRGB(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> &lightBar) {
-	lightBar.ClearTo(RgbColor(255, 0, 0));
-	lightBar.Show();
-	vTaskDelay(1000 / portTICK_PERIOD_MS);
-	lightBar.ClearTo(RgbColor(0, 255, 0));
-	lightBar.Show();
-	vTaskDelay(1000 / portTICK_PERIOD_MS);
-	lightBar.ClearTo(RgbColor(0, 0, 255));
-	lightBar.Show();
-	vTaskDelay(1000 / portTICK_PERIOD_MS);
-	lightBar.ClearTo(RgbColor(0, 0, 0));
-	lightBar.Show();
+	if (rawMode != 0) {
+		lightBarMode = rawMode;
+	} else if (targetPosition > LIGHTBAR_MAX_POSITION) {
+		lightBarMode = flashRed;
+	}
+	// Serial.printf("%i, %i, %i\n\r", lightBarMode, rawMode, rawPosition);
+	return;
 }
 
 /**
  * @brief Controls addressable LED pixels and uses the I2C ambient light sensor.
- *
- * This task controls the lighting of an addressable LED strip based on readings from an I2C ambient light sensor.
- * The LED strip is driven by an ESP32 using the I2S silicon remapped to any pin to drive LED data. The function starts by initializing the LED strip to black.
- *
- * The function then enters a loop where it continually reads the light sensor and adjusts the brightness of the LED strip based on the light level.
- * It also updates the position of the lighting effect on the LED strip based on a target position, which can be set by calling the xTaskNotify() function.
- * The position is represented as a value between 0 and LIGHTBAR_MAX_POSITION, which corresponds to the maximum number of pixels on the LED strip.
- *
- * The lighting effect itself is a gradient that blends from green at the bottom of the strip to red at the top, and can be updated with a varying postion on that gradient.
- * The position of the effect on the strip can be updated by setting the target position with xTaskNotify().
- *
- * If the target position is set above LIGHTBAR_MAX_POSITION, the function will flash the LED strip in red to indicate a high CO2 level.
+ * This task controls an LED strip based on readings from an ambient light sensor, adjusting the brightness and position of a color gradient on the strip.
+ * The gradient blends from green to red, and the position is set using xTaskNotify(). If the target position is above the maximum position, the strip flashes
+ * red to indicate high CO2 levels. The code initializes the light strip and enters a loop that reads the light sensor, updates the position and brightness,
+ * and shows the effect. There are also modes for testing and flashing a purple pulse.
  *
  * @param[in] parameter The task parameter (unused).
  */
-void lightBarTask(void *parameter) {
+void lightBarTask(void* parameter) {
 	// Create the the lightbar object
 	NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> lightBar(PIXEL_COUNT, PIXEL_DATA_PIN);  // uses i2s silicon remapped to any pin to drive led data
 
@@ -338,42 +311,117 @@ void lightBarTask(void *parameter) {
 	Wire1.begin(WIRE1_SDA_PIN, WIRE1_SCL_PIN, 500000);	// tested to be 380khz irl (400khz per data sheet)
 	lightSensor.begin(GAIN_48X, EXPOSURE_400ms, true, Wire1);
 
-#ifdef PRODUCTION_TEST
-	lightSensor.isConnected(Wire1, &Serial);
-	lightBarTestRGB(lightBar);
-#endif
-
 	double lux;	 // The measured illumination level in lux.
 
-	uint8_t targetBrightness = 255;	 // The target brightness value for the light bar, ranging from 0 to 255.
-	uint8_t brightness = 255;		 // The current brightness value for the light bar, ranging from 0 to 255.
+	uint8_t targetBrightness = MAX_BRIGHTNESS;	// The target brightness value for the light bar, ranging from 0 to 255.
+	uint8_t brightness = 255;					// The current brightness value for the light bar, ranging from 0 to 255.
 
-	uint32_t rawPosition;								  // The raw position value for the light bar, filled from task notification
+	uint32_t rawNotification;							  // The raw position value for the light bar, filled from task notification
 	uint16_t targetPosition = LIGHTBAR_MAX_POSITION / 3;  // The target position value for the light bar, ranging from 0 to LIGHTBAR_MAX_POSITION.
 	uint16_t position = 0;								  // The current position value for the light bar, ranging from 0 to LIGHTBAR_MAX_POSITION.
+	lightBarModes lightBarMode = lightBarScale;
+
+#ifdef PRODUCTION_TEST
+	lightSensor.isConnected(Wire1, &Serial);
+	lightBarMode = rgbTest;
+#endif
 
 	while (true) {
-		// TODO refactor to remove for loop, and use if around the updateBrightness() call
-		bool updatePixels = updateBrightness(lightSensor, brightness, targetBrightness);
+		if (updateBrightness(lightSensor, brightness, targetBrightness) == true) {
+			if (lightBarMode == idleFrame) {
+				lightBarMode = lightBarScale;
+			}
+		}
 
 		for (uint8_t i = 0; i < 20; i++) {	// get light reading every 20 frames (600ms at 30ms frames)
-			if (xTaskNotifyWait(0, 0xFFFF, &rawPosition, 0) == pdTRUE) {
-				handleTargetPositionNotification(targetPosition, rawPosition);
-				// Serial.println(rawPosition);
+			if (xTaskNotifyWait(0, 0xFFFF, &rawNotification, 0) == pdTRUE) {
+				handleTargetPositionNotification(targetPosition, rawNotification, lightBarMode);
 			}
 
-			if (targetPosition < LIGHTBAR_MAX_POSITION) {				   // if position is in valid range
-				if (position != targetPosition || updatePixels == true) {  // only update leds when something has changed
-					updatePosition(position, targetPosition);
-					updateLightBar(lightBar, position, brightness);
-					updatePixels = false;
+			switch (lightBarMode) {
+			case idleFrame:
+				if (position != targetPosition) {
+					lightBarMode = lightBarScale;
 				}
-				vTaskDelay(FRAME_TIME / portTICK_PERIOD_MS);  // time between frames
-			} else {
-				// flash red to indicate CO2 level over CO2_MAX
-				flashLightBarRed(lightBar);
-				position = LIGHTBAR_MAX_POSITION;
-				brightness = MAX_BRIGHTNESS;
+				vTaskDelay(pdMS_TO_TICKS(FRAME_TIME));  // time between frames
+				break;
+
+			case lightBarScale:
+				updatePosition(position, targetPosition);
+				updateLightBar(lightBar, position, brightness);
+				if (position == targetPosition) {
+					lightBarMode = idleFrame;
+				}
+				vTaskDelay(pdMS_TO_TICKS(FRAME_TIME));  // time between frames
+				break;
+
+			case flashRed:
+				lightBar.ClearTo(RgbColor(0));
+				lightBar.Show();
+				vTaskDelay(500 / portTICK_PERIOD_MS);
+
+				lightBar.ClearTo(RgbColor(255, 0, 0));
+				lightBar.Show();
+				vTaskDelay(500 / portTICK_PERIOD_MS);
+
+				if (position < LIGHTBAR_MAX_POSITION) {
+					lightBarMode = lightBarScale;
+					position = LIGHTBAR_MAX_POSITION;
+					brightness = MAX_BRIGHTNESS;
+				}
+				break;
+
+			case purplePulse:
+				for (size_t i = 0; i < MAX_BRIGHTNESS; i += 2) {
+					lightBar.ClearTo(RgbColor(i, 0, i));
+					lightBar.Show();
+					vTaskDelay(pdMS_TO_TICKS(FRAME_TIME));  // time between frames
+				}
+				lightBar.ClearTo(RgbColor(0));
+				lightBar.Show();
+				lightBarMode = lightBarScale;
+				break;
+
+			case greenPulse:
+				for (size_t i = 0; i < MAX_BRIGHTNESS; i += 2) {
+					lightBar.ClearTo(RgbColor(0, i, 0));
+					lightBar.Show();
+					vTaskDelay(pdMS_TO_TICKS(FRAME_TIME));  // time between frames
+				}
+				lightBar.ClearTo(RgbColor(0));
+				lightBar.Show();
+				lightBarMode = lightBarScale;
+				break;
+
+			case rgbTest:  // Flash all pixels red, green, blue to test wiring and config is correct
+				lightBar.ClearTo(RgbColor(255, 0, 0));
+				lightBar.Show();
+				vTaskDelay(1000 / portTICK_PERIOD_MS);
+				lightBar.ClearTo(RgbColor(0, 255, 0));
+				lightBar.Show();
+				vTaskDelay(1000 / portTICK_PERIOD_MS);
+				lightBar.ClearTo(RgbColor(0, 0, 255));
+				lightBar.Show();
+				vTaskDelay(1000 / portTICK_PERIOD_MS);
+				lightBar.ClearTo(RgbColor(0, 0, 0));
+				lightBar.Show();
+				lightBarMode = lightBarScale;
+				break;
+
+			case errorRed:
+				lightBar.ClearTo(RgbColor(MAX_BRIGHTNESS, 0, 0));
+				lightBar.Show();
+				vTaskSuspend(NULL);
+				break;
+
+			case off:
+				lightBar.ClearTo(RgbColor(0));
+				lightBar.Show();
+				vTaskSuspend(NULL);
+				break;
+
+			default:
+				break;
 			}
 		}
 	}
@@ -381,9 +429,9 @@ void lightBarTask(void *parameter) {
 
 void initializeNTPClient() {
 	// Define the NTP servers to be used for time synchronization
-	const char *ntpServer1 = "pool.ntp.org";
-	const char *ntpServer2 = "time.nist.gov";
-	const char *ntpServer3 = "time.google.com";
+	const char* ntpServer1 = "pool.ntp.org";
+	const char* ntpServer2 = "time.nist.gov";
+	const char* ntpServer3 = "time.google.com";
 
 	// Set the SNTP operating mode to polling, and configure the NTP servers
 	sntp_setoperatingmode(SNTP_OPMODE_POLL);
@@ -393,8 +441,8 @@ void initializeNTPClient() {
 	sntp_init();
 }
 
-void setUpDNSServer(DNSServer &dnsServer, const IPAddress &localIP) {
-// Define the DNS interval in milliseconds between processing DNS requests
+void setUpDNSServer(DNSServer& dnsServer, const IPAddress& localIP) {
+	// Define the DNS interval in milliseconds between processing DNS requests
 #define DNS_INTERVAL 30
 
 	// Set the TTL for DNS response and start the DNS server
@@ -402,11 +450,18 @@ void setUpDNSServer(DNSServer &dnsServer, const IPAddress &localIP) {
 	dnsServer.start(53, "*", localIP);
 }
 
-void startSoftAccessPoint(const char *password, const IPAddress &localIP, const IPAddress &gatewayIP) {
-// Define the maximum number of clients that can connect to the server
-#define MAX_CLIENTS 4
-// Define the WiFi channel to be used (channel 6 in this case)
-#define WIFI_CHANNEL 6
+void onClientConnected(WiFiEvent_t event) {
+	uint32_t notification = static_cast<uint8_t>(purplePulse);
+	xTaskNotify(lightBar, static_cast<uint8_t>(purplePulse), eSetValueWithOverwrite);
+	return;
+}
+
+void startSoftAccessPoint(const char* password, const IPAddress& localIP, const IPAddress& gatewayIP) {
+	// Define the maximum number of clients that can connect to the server
+	const uint8_t MAX_CLIENTS = 4;
+
+	// Define the WiFi channel to be used (channel 6 in this case)
+	const uint8_t WIFI_CHANNEL = 6;
 
 	// Set the WiFi mode to access point and station
 	WiFi.mode(WIFI_MODE_APSTA);
@@ -417,15 +472,14 @@ void startSoftAccessPoint(const char *password, const IPAddress &localIP, const 
 	// Configure the soft access point with a specific IP and subnet mask
 	WiFi.softAPConfig(localIP, gatewayIP, subnetMask);
 
-	const char *ssid;
+	// Generate a unique SSID based on the ESP32's MAC address
+	char uniqueSSID[18] = { 0 };
 	uint8_t mac[6];
-	char macStr[18] = {0};
 	esp_read_mac(mac, ESP_MAC_WIFI_STA);
-	sprintf(macStr, "Kea-CO2-%02X", mac[5]);
-	ssid = macStr;
+	snprintf(uniqueSSID, sizeof(uniqueSSID), "Kea-CO2-%02X", mac[5]);
 
-	// Start the soft access point with the given ssid, password, channel, max number of clients
-	WiFi.softAP(ssid, password, WIFI_CHANNEL, 0, MAX_CLIENTS);
+	// Start the soft access point with the generated SSID, password, channel, and max number of clients
+	WiFi.softAP(uniqueSSID, password, WIFI_CHANNEL, 0, MAX_CLIENTS);
 
 	// Disable AMPDU RX on the ESP32 WiFi to fix a bug on Android
 	esp_wifi_stop();
@@ -434,35 +488,38 @@ void startSoftAccessPoint(const char *password, const IPAddress &localIP, const 
 	my_config.ampdu_rx_enable = false;
 	esp_wifi_init(&my_config);
 	esp_wifi_start();
-	vTaskDelay(100 / portTICK_PERIOD_MS);  // Add a small delay
+	vTaskDelay(pdMS_TO_TICKS(100));  // Add a small delay
+
+	// Register an event handler for when a station connects to the soft AP
+	WiFi.onEvent(onClientConnected, WiFiEvent_t::ARDUINO_EVENT_WIFI_AP_STACONNECTED);
 }
 
-void setUpWebserver(AsyncWebServer &server, const IPAddress &localIP) {
+void setUpWebserver(AsyncWebServer& server, const IPAddress& localIP) {
 	//======================== Webserver ========================
 	// WARNING IOS (and maybe macos) WILL NOT POP UP IF IT CONTAINS THE WORD "Success" https://www.esp8266.com/viewtopic.php?f=34&t=4398
 	// SAFARI (IOS) IS STUPID, G-ZIPPED FILES CAN'T END IN .GZ https://github.com/homieiot/homie-esp8266/issues/476 this is fixed by the webserver serve static function.
 	// SAFARI (IOS) there is a 128KB limit to the size of the HTML. The HTML can reference external resources/images that bring the total over 128KB
 	// SAFARI (IOS) popup browser has some severe limitations (javascript disabled, cookies disabled)
 
-	server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+	server.on("/", HTTP_GET, [](AsyncWebServerRequest* request) {
 		request->redirect(localIPURL);
-	});
+		});
 
-	server.on("/data.json", HTTP_GET, [](AsyncWebServerRequest *request) {	// when client asks for the json data preview file..
-		AsyncResponseStream *response = request->beginResponseStream("application/json");
+	server.on("/data.json", HTTP_GET, [](AsyncWebServerRequest* request) {	// when client asks for the json data preview file..
+		AsyncResponseStream* response = request->beginResponseStream("application/json");
 		response->addHeader("Cache-Control:", "max-age=5");
 		xSemaphoreTake(jsonDocMutex, 1);			 // ask for control of json doc
 		serializeJson(jsonDataDocument, *response);	 // turn the json document in ram into a normal json file (as a stream of data)
 		xSemaphoreGive(jsonDocMutex);				 // release control of json doc
 		request->send(response);
-	});
+		});
 
-	server.on("/Kea-CO2-Data.csv", HTTP_GET, [](AsyncWebServerRequest *request) {
-		AsyncWebServerResponse *response = request->beginResponse(LittleFS, "/Kea-CO2-Data.csv", String(), true);
+	server.on("/Kea-CO2-Data.csv", HTTP_GET, [](AsyncWebServerRequest* request) {
+		AsyncWebServerResponse* response = request->beginResponse(LittleFS, "/Kea-CO2-Data.csv", String(), true);
 		request->send(response);
-	});
+		});
 
-	server.on("/yesclear.html", HTTP_GET, [](AsyncWebServerRequest *request) {
+	server.on("/yesclear.html", HTTP_GET, [](AsyncWebServerRequest* request) {
 		request->redirect(localIPURL);	// return the user back to the home page
 
 		initializeJson();  // clears the data file
@@ -474,29 +531,29 @@ void setUpWebserver(AsyncWebServer &server, const IPAddress &localIP) {
 		vTaskResume(csvFileManager);							 // csvFileManager is usually left in paused state until needed, resuming it here.
 
 		ESP_LOGI("", "data clear Requested");
-	});
+		});
 
-	server.on("/off", HTTP_GET, [](AsyncWebServerRequest *request) {
+	server.on("/off", HTTP_GET, [](AsyncWebServerRequest* request) {
 		request->redirect(localIPURL);
-		vTaskDelete(lightBar);
-		xTaskCreate(clearLightBar, "clearLightBar", 5000, NULL, 1, NULL);
+		uint32_t notification = static_cast<uint32_t>(off);
+		xTaskNotify(lightBar, notification, eSetValueWithOverwrite);
 		ESP_LOGI("", "led off Requested");
-	});
+		});
 
-	server.on("/favicon.ico", [](AsyncWebServerRequest *request) { request->send(404); });
+	server.on("/favicon.ico", [](AsyncWebServerRequest* request) { request->send(404); });
 
 	// Required for captive portal redirects
-	server.on("/connecttest.txt", [](AsyncWebServerRequest *request) { request->redirect("http://logout.net"); });	// windows 11 captive portal workaround
-	server.on("/wpad.dat", [](AsyncWebServerRequest *request) { request->send(404); });								// Honestly don't understand what this is but a 404 stops win 10 keep calling this repeatedly and panicking the esp32 :)
+	server.on("/connecttest.txt", [](AsyncWebServerRequest* request) { request->redirect("http://logout.net"); });	// windows 11 captive portal workaround
+	server.on("/wpad.dat", [](AsyncWebServerRequest* request) { request->send(404); });								// Honestly don't understand what this is but a 404 stops win 10 keep calling this repeatedly and panicking the esp32 :)
 
 	// Background responses: Probably not all are Required, but some are. Others might speed things up?
 	// A Tier (commonly used by modern systems)
-	server.on("/generate_204", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });		   // android captive portal redirect
-	server.on("/redirect", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });			   // microsoft redirect
-	server.on("/hotspot-detect.html", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });  // apple call home
-	server.on("/canonical.html", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });	   // firefox captive portal call home
-	server.on("/success.txt", [](AsyncWebServerRequest *request) { request->send(200); });					   // firefox captive portal call home
-	server.on("/ncsi.txt", [](AsyncWebServerRequest *request) { request->redirect(localIPURL); });			   // windows call home
+	server.on("/generate_204", [](AsyncWebServerRequest* request) { request->redirect(localIPURL); });		   // android captive portal redirect
+	server.on("/redirect", [](AsyncWebServerRequest* request) { request->redirect(localIPURL); });			   // microsoft redirect
+	server.on("/hotspot-detect.html", [](AsyncWebServerRequest* request) { request->redirect(localIPURL); });  // apple call home
+	server.on("/canonical.html", [](AsyncWebServerRequest* request) { request->redirect(localIPURL); });	   // firefox captive portal call home
+	server.on("/success.txt", [](AsyncWebServerRequest* request) { request->send(200); });					   // firefox captive portal call home
+	server.on("/ncsi.txt", [](AsyncWebServerRequest* request) { request->redirect(localIPURL); });			   // windows call home
 
 	// B Tier (uncommon)
 	// server.on("/chrome-variations/seed", [](AsyncWebServerRequest *request) { request->send(200); }); // chrome captive portal call home
@@ -506,7 +563,7 @@ void setUpWebserver(AsyncWebServer &server, const IPAddress &localIP) {
 
 	server.serveStatic("/", LittleFS, "/").setCacheControl("max-age=86400");  // serve any file on the device when requested (24hr cache limit)
 
-	server.onNotFound([](AsyncWebServerRequest *request) {
+	server.onNotFound([](AsyncWebServerRequest* request) {
 		request->redirect(localIPURL);
 
 #ifdef TEST_WEBSERVER
@@ -516,23 +573,48 @@ void setUpWebserver(AsyncWebServer &server, const IPAddress &localIP) {
 		Serial.print(request->url());
 		Serial.println(" sent redirect to " + localIPURL + "\n");
 #endif
-	});
+		});
 }
 
-void connectToOpenWifi() {
-	int numberOfNetworks = WiFi.scanNetworks();
-	if (numberOfNetworks == 0) {
+// Connect to the first available open WiFi network with a strong signal
+bool connectToOpenWifi() {
+	const int MIN_SIGNAL_STRENGTH = -60;
+
+	// Scan for available networks
+	int16_t numNetworks = WiFi.scanNetworks();
+
+	// If no networks are found, log a message and return
+	if (numNetworks == 0) {
 		ESP_LOGI("", "No networks found.");
-	} else {
-		for (int i = 0; i < numberOfNetworks; ++i) {
-			bool isOpen = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN);
-			bool hasStrongSignal = (WiFi.RSSI(i) > -60);  // RSSI is wifi signal strength
-			if (isOpen && hasStrongSignal) {
-				ESP_LOGI("", "Found Open Network.");
-				WiFi.begin(WiFi.SSID(i).c_str());
-			}
-		}
+		return false;
 	}
+
+	// Loop through all available networks
+	for (int i = 0; i < numNetworks; ++i) {
+		// Check if the network is open and has a strong signal
+		bool isOpen = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN);
+		bool hasStrongSignal = (WiFi.RSSI(i) > MIN_SIGNAL_STRENGTH);  // RSSI is wifi signal strength
+
+		// If the network is not open or doesn't have a strong signal, skip it
+		if (!isOpen || !hasStrongSignal) {
+			continue;
+		}
+
+		// Check if the SSID contains "Kea"
+		String ssid = WiFi.SSID(i);
+		if (ssid.indexOf("Kea") != -1) {
+			continue;
+		}
+
+		// If the network is open, has a strong signal, and doesn't contain "Kea" in the SSID, connect to it
+		ESP_LOGI("", "Connecting to %s...", ssid.c_str());
+		WiFi.setAutoReconnect(false);
+		WiFi.begin(ssid.c_str());
+
+		return true;
+	}
+
+	return false;
 }
 
 /**
@@ -556,7 +638,7 @@ void connectToOpenWifi() {
  *
  * @param[in] parameter The task parameter (unused).
  */
-void webserverTask(void *parameter) {
+void webserverTask(void* parameter) {
 	// Create a DNS server instance
 	DNSServer dnsServer;
 	// Create an AsyncWebServer instance listening on port 80
@@ -585,26 +667,19 @@ void webserverTask(void *parameter) {
 }
 
 /**
- * @brief  Initializes a the CSV file and adds a header if needed.
- * This function if needed, creates a new CSV file with the given filename and adds a header to it if it doesn't exist
+ * @brief Initializes a CSV file and adds a header if needed.
+ *
+ * This function creates a new CSV file with the given filename and adds a header to it if it doesn't exist.
  * If a file with the same filename already exists and has some data in it, it is left alone.
  *
  * @param[in] filename The name of the CSV file.
  * @return True if the CSV was successfully initialized, false otherwise.
  */
-bool initializeCsvFile(const char *filename) {
-	// Attempt to open the CSV file
-	File file = LittleFS.open(F(filename), FILE_APPEND, true);
-	int retryCount = 0;
-	while (!file && retryCount < 5) {
-		ESP_LOGE("", "Error opening %s. Retrying...", (filename));
-		file = LittleFS.open(F(filename), FILE_APPEND, true);
-		retryCount++;
-		vTaskDelay(500 / portTICK_PERIOD_MS);
-	}
-
+bool initializeCsvFile(const char* filename, const char* csvHeader) {
+	// Attempt to open the CSV file (create if it doesn't exist)
+	File file = LittleFS.open(filename, FILE_APPEND, true);
 	if (!file) {
-		ESP_LOGE("", "Unable to open %s. Aborting task.", (CSVLogFilename));
+		ESP_LOGE("", "Unable to open %s. Aborting task.", filename);
 		return false;
 	}
 
@@ -613,8 +688,7 @@ bool initializeCsvFile(const char *filename) {
 
 	// If the file is empty, add the CSV header
 	if (!fileHasData) {
-		// Add CSV header to empty file
-		if (!file.print("Date, Time, CO2(PPM), Humidity(%RH), Temperature(DegC)\r\n")) {
+		if (!file.print(csvHeader)) {
 			ESP_LOGE("", "Error writing CSV header to file %s", filename);
 			file.close();
 			return false;
@@ -637,59 +711,70 @@ bool initializeCsvFile(const char *filename) {
  * cleared. If the CSV file exceeds MAX_CSV_SIZE_BYTES, incoming data is also ignored until the file is cleared.
  * @param[in] parameter The task parameter (unused).
  */
-void csvFileManagerTask(void *parameter) {
-	if (!initializeCsvFile(CSVLogFilename)) {
-		ESP_LOGE("", "Unable to initialize %s. Aborting task.", (CSVLogFilename));
+void csvFileManagerTask(void* parameter) {
+	const char* csvHeader = "Date, Time, CO2(PPM), Humidity(%RH), Temperature(DegC)\r\n";
+	const uint32_t BUFFER_SIZE = 256;
+	const uint32_t FLUSH_THRESHOLD = 128;
+	const uint32_t FLUSH_EVERY_THRESHOLD = 512;
+
+	if (!initializeCsvFile(CSVLogFilename, csvHeader)) {
+		ESP_LOGE("", "Unable to initialize %s. Aborting task.", CSVLogFilename);
 		vTaskDelete(NULL);
 	}
 
-	File csvDataFile = LittleFS.open(F(CSVLogFilename), FILE_APPEND);
+	File csvDataFile = LittleFS.open(CSVLogFilename, FILE_APPEND);
+	if (!csvDataFile) {
+		ESP_LOGE("", "Unable to open %s. Aborting task.", CSVLogFilename);
+		vTaskDelete(NULL);
+	}
 
 	uint32_t bufferSizeNow = 0;
-	csvDataFile.setBufferSize(256);
+	csvDataFile.setBufferSize(BUFFER_SIZE);
 	uint32_t csvDataFilesize = csvDataFile.size();
 
 	while (true) {
-		vTaskSuspend(NULL);
-		uint32_t notification = 0;
-		xTaskNotifyWait(0, 65535, &notification, 0);
+		// Wait for notifications
+		uint32_t notification = ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
 		// Handle delete file notification
 		if (notification > 0) {
-			ESP_LOGI("", "Received delete file notification for %s", (CSVLogFilename));
+			ESP_LOGI("", "Received delete file notification for %s", CSVLogFilename);
 			csvDataFile.close();
-			LittleFS.remove(F(CSVLogFilename));
+			LittleFS.remove(CSVLogFilename);
 
-			if (!initializeCsvFile(CSVLogFilename)) {
-				ESP_LOGE("", "Unable to initialize %s. Aborting task.", (CSVLogFilename));
+			if (!initializeCsvFile(CSVLogFilename, csvHeader)) {
+				ESP_LOGE("", "Unable to initialize %s. Aborting task.", CSVLogFilename);
 				vTaskDelete(NULL);
 			}
 
-			csvDataFile = LittleFS.open(F(CSVLogFilename), FILE_APPEND);
+			csvDataFile = LittleFS.open(CSVLogFilename, FILE_APPEND);
+			if (!csvDataFile) {
+				ESP_LOGE("", "Unable to open %s. Aborting task.", CSVLogFilename);
+				vTaskDelete(NULL);
+			}
 
 			bufferSizeNow = 0;
-			csvDataFile.setBufferSize(256);
+			csvDataFile.setBufferSize(BUFFER_SIZE);
 			csvDataFilesize = csvDataFile.size();
 		}
 
 		char csvLine[CSV_LINE_MAX_CHARS];
-		if (xQueueReceive(charsForCSVFileQueue, &csvLine, 0) == pdTRUE) {
-			//----- Append line to CSV File (flush if buffer nearly fully) -----------------
-			if (csvDataFilesize < MAX_CSV_SIZE_BYTES) {	 // last line of defense for memory leaks
+		if (xQueueReceive(charsForCSVFileQueue, csvLine, 0) == pdTRUE) {
+			// Write line to CSV file
+			if (csvDataFilesize < MAX_CSV_SIZE_BYTES) { // Prevent memory leaks
 				uint8_t bytesAdded = csvDataFile.println(csvLine);
 
 				if (bytesAdded > 0) {
 					bufferSizeNow += bytesAdded;
-					// Serial.println(bufferSizeNow);
 
-					if (bufferSizeNow > 128 || csvDataFilesize < 512) {
+					if (bufferSizeNow > FLUSH_THRESHOLD || csvDataFilesize < FLUSH_EVERY_THRESHOLD) {
 						csvDataFile.flush();
 						csvDataFilesize += bufferSizeNow;
 						bufferSizeNow = 0;
-						ESP_LOGI("", "%s Flushed to Flash Storage", (CSVLogFilename));
+						ESP_LOGI("", "%s Flushed to Flash Storage", CSVLogFilename);
 					}
 				} else {
-					ESP_LOGE("", "Error Printing to %s", (CSVLogFilename));
+					ESP_LOGE("", "Error writing to %s", CSVLogFilename);
 				}
 			}
 		}
@@ -706,7 +791,7 @@ void csvFileManagerTask(void *parameter) {
  * releases a mutex to ensure that the JSON document is accessed safely in a multithreaded environment.
  * @param[in] parameter The task parameter (unused).
  */
-void jsonFileManagerTask(void *parameter) {
+void jsonFileManagerTask(void* parameter) {
 	time_t currentEpoch, prevEpoch = 0;
 	uint8_t CO2Index = 0, tempIndex = 0, humidityIndex = 0;
 	uint32_t notification;
@@ -779,11 +864,11 @@ void jsonFileManagerTask(void *parameter) {
  *
  * @param[in] parameter The task parameter (unused).
  */
-void sensorManagerTask(void *parameter) {
+void sensorManagerTask(void* parameter) {
 	PCF8563_Class rtc;
 	SCD4X co2;
 
-	const char *time_format = "%y/%m/%d,%H:%M";
+	const char* time_format = "%y/%m/%d,%H:%M";
 
 	Wire.begin(WIRE_SDA_PIN, WIRE_SCL_PIN, 100000);
 
@@ -826,7 +911,8 @@ void sensorManagerTask(void *parameter) {
 
 			trendCO2 = 0.5 * (CO2 - prevCO2) + (1 - 0.5) * trendCO2;
 			lightbarPosition = mapCO2toPosition(CO2 + trendCO2);
-			xTaskNotify(lightBar, lightbarPosition, eSetValueWithOverwrite);
+			uint32_t notification = lightbarPosition << 16; //put the lightbar Position in the top 16bits (bottom 8bits is the mode)
+			xTaskNotify(lightBar, notification, eSetValueWithoutOverwrite);
 
 			rawTemperature -= TEMP_OFFSET;
 
@@ -862,6 +948,7 @@ void sensorManagerTask(void *parameter) {
 		}
 
 		if (timeSet == false && (sntp_getreachability(0) + sntp_getreachability(1) + sntp_getreachability(2) > 0)) {
+			xTaskNotify(lightBar, greenPulse, eSetValueWithOverwrite);
 			timeSet = true;
 			rtc.syncToRtc();
 			WiFi.disconnect();
@@ -909,6 +996,7 @@ void setup() {
 
 	// Initialize LittleFS (ESP32 Storage) and format it if it fails to mount.
 	if (LittleFS.begin(true) == false) {
+		xTaskNotify(lightBar, errorRed, eSetValueWithOverwrite);
 		ESP_LOGE("", "Error mounting LittleFS (Even with Format on Fail)");
 	}
 
@@ -918,6 +1006,7 @@ void setup() {
 
 	if (LittleFS.exists("/index.html.gz") == false) {
 		ESP_LOGE("", "index.html.gz doesn't exist");
+		xTaskNotify(lightBar, errorRed, eSetValueWithOverwrite);
 	}
 
 	// Create tasks for the webserver, sensor manager, CSV file manager, and JSON file manager.
