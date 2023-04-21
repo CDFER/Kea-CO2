@@ -65,7 +65,7 @@
 // and an offset to adjust the temperature reading
 #define PIXEL_DATA_PIN 16  // GPIO -> LEVEL SHIFT -> Pixel 1 Data In Pin
 #define PIXEL_COUNT 11	   // Number of Addressable Pixels to write data to (starts at pixel 1)
-#define TEMP_OFFSET 6.4	   // The enclosure runs a bit hot, so reduce this to get a more accurate ambient temperature
+#define TEMP_OFFSET 10.6	   // The enclosure runs a bit hot, so reduce this to get a more accurate ambient temperature
 
 // -----------------------------------------
 //
@@ -78,9 +78,9 @@
 // the brightness factor (lux/BRIGHTNESS_FACTOR = LED brightness),
 // and the maximum brightness setting for the LEDs
 #define CO2_MAX 2000		 // Top of the CO2 light bar (when it transitions to warning flash)
-#define CO2_MIN 450			 // Bottom of the light bar (baseline CO2 level)
+#define CO2_MIN 400			 // Bottom of the light bar (baseline CO2 level)
 #define FRAME_TIME 30		 // Milliseconds between frames (30ms = ~33.3fps maximum)
-#define BRIGHTNESS_FACTOR 3	 // Lux/BRIGHTNESS_FACTOR = LED brightness
+#define BRIGHTNESS_FACTOR 6	 // Lux/BRIGHTNESS_FACTOR = LED brightness
 #define MAX_BRIGHTNESS 200	 // Maximum brightness setting for the WS2812B LEDs
 enum lightBarModes {
 	idleFrame,
@@ -121,7 +121,8 @@ const String localIPURL = "http://4.3.2.1/index.html";	// URL to the web server 
 //
 // -----------------------------------------
 
-#define LIGHTBAR_MAX_POSITION PIXEL_COUNT * 255	 // the maximum light bar position
+#define LIGHTBAR_MAX_POSITION PIXEL_COUNT * 255
+#define LIGHTBAR_MIN_POSITION 255
 #define LAST_PIXEL PIXEL_COUNT - 1				 // last Addressable Pixel to write data to (starts at pixel 0)
 #define low8Bits(w) ((uint8_t)((w)))			 // returns bits 1 - 8 of a 32bit variable
 #define high16Bits(w) ((uint16_t)((w) >> 16))	 // returns bits 17 - 32 of a 32bit variable
@@ -244,7 +245,9 @@ bool updateBrightness(LTR303& lightSensor, uint8_t& brightness, uint8_t& targetB
 
 // Updates the position of the lighting effect on the LED strip based on a target position.
 void updatePosition(uint16_t& position, const uint16_t& targetPosition) {
-	if (targetPosition < LIGHTBAR_MAX_POSITION) {  // if position is in valid range
+	if (targetPosition < LIGHTBAR_MIN_POSITION){
+		position = LIGHTBAR_MIN_POSITION;
+	} else if (targetPosition < LIGHTBAR_MAX_POSITION) {  // if position is in valid range
 		if (position > targetPosition) {
 			position--;
 		} else if (position < targetPosition) {
@@ -303,7 +306,7 @@ void handleTargetPositionNotification(uint16_t& targetPosition, uint32_t rawNoti
  */
 void lightBarTask(void* parameter) {
 	// Create the the lightbar object
-	NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> lightBar(PIXEL_COUNT, PIXEL_DATA_PIN);  // uses i2s silicon remapped to any pin to drive led data
+	NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> lightBar(PIXEL_COUNT+1, PIXEL_DATA_PIN);  // uses i2s silicon remapped to any pin to drive led data
 
 	initializeLightBar(lightBar);
 
@@ -332,8 +335,9 @@ void lightBarTask(void* parameter) {
 				lightBarMode = lightBarScale;
 			}
 		}
+		//Serial.println(brightness);
 
-		for (uint8_t i = 0; i < 20; i++) {	// get light reading every 20 frames (600ms at 30ms frames)
+		for (uint8_t i = 0; i < 20; i++) {	// get light reading every 20 frames
 			if (xTaskNotifyWait(0, 0xFFFF, &rawNotification, 0) == pdTRUE) {
 				handleTargetPositionNotification(targetPosition, rawNotification, lightBarMode);
 			}
@@ -364,7 +368,7 @@ void lightBarTask(void* parameter) {
 				lightBar.Show();
 				vTaskDelay(500 / portTICK_PERIOD_MS);
 
-				if (position < LIGHTBAR_MAX_POSITION) {
+				if (targetPosition < LIGHTBAR_MAX_POSITION) {
 					lightBarMode = lightBarScale;
 					position = LIGHTBAR_MAX_POSITION;
 					brightness = MAX_BRIGHTNESS;
@@ -873,14 +877,19 @@ void sensorManagerTask(void* parameter) {
 	Wire.begin(WIRE_SDA_PIN, WIRE_SCL_PIN, 100000);
 
 	rtc.begin(Wire);
-	rtc.syncToSystem();
-	setenv("TZ", time_zone, 1);
-	tzset();
+	if(rtc.syncToSystem() == true){
+		setenv("TZ", time_zone, 1);
+		tzset();
+	} else {
+		xTaskNotify(lightBar, errorRed, eSetValueWithOverwrite);
+	}
 
 	co2.begin(Wire);
 
 #ifdef PRODUCTION_TEST
-	co2.isConnected(Wire, &Serial);
+	if(co2.isConnected(Wire, &Serial) == false){
+		xTaskNotify(lightBar, errorRed, eSetValueWithOverwrite);
+	}
 	co2.setCalibrationMode(false);
 	co2.saveSettings();
 #endif
@@ -948,6 +957,7 @@ void sensorManagerTask(void* parameter) {
 		}
 
 		if (timeSet == false && (sntp_getreachability(0) + sntp_getreachability(1) + sntp_getreachability(2) > 0)) {
+			vTaskResume(lightBar);
 			xTaskNotify(lightBar, greenPulse, eSetValueWithOverwrite);
 			timeSet = true;
 			rtc.syncToRtc();
@@ -973,8 +983,6 @@ void setup() {
 	// Wait for the Serial object to become available.
 	while (!Serial)
 		;
-
-	// Print a welcome message to the Serial port.
 	Serial.printf("\r\n Kea CO2 \r\n %s compiled on " __DATE__ " at " __TIME__ " \r\n %s%s in the %s environment \r\n\r\n", USER, VERSION, TAG, ENV);
 
 	// Print chip model and revision if production test mode is enabled.
@@ -994,6 +1002,10 @@ void setup() {
 	// Create a mutex for controlling access to the JSON document used for storing data for the webserver.
 	jsonDocMutex = xSemaphoreCreateMutex();
 
+	// Parameters are: task function, name for debugging, stack size, parameters to pass to task function, priority, pointer to task handle.
+	xTaskCreate(sensorManagerTask, "sensorManagerTask", 3800, NULL, 1, &sensorManager);
+	xTaskCreate(jsonFileManagerTask, "jsonFileManagerTask", 21000, NULL, 0, &jsonFileManager);
+
 	// Initialize LittleFS (ESP32 Storage) and format it if it fails to mount.
 	if (LittleFS.begin(true) == false) {
 		xTaskNotify(lightBar, errorRed, eSetValueWithOverwrite);
@@ -1003,18 +1015,15 @@ void setup() {
 #ifdef PRODUCTION_TEST
 	LittleFS.remove(F(CSVLogFilename));
 #endif
-
+	ESP_LOGI("LittleFS", "unused storage = %ikib", (LittleFS.totalBytes() - LittleFS.usedBytes()) / 1024);
 	if (LittleFS.exists("/index.html.gz") == false) {
-		ESP_LOGE("", "index.html.gz doesn't exist");
+		ESP_LOGE("LittleFS", "index.html.gz doesn't exist");
 		xTaskNotify(lightBar, errorRed, eSetValueWithOverwrite);
 	}
 
-	// Create tasks for the webserver, sensor manager, CSV file manager, and JSON file manager.
 	// Parameters are: task function, name for debugging, stack size, parameters to pass to task function, priority, pointer to task handle.
 	xTaskCreate(webserverTask, "webserverTask", 17060, NULL, 1, &webserver);
-	xTaskCreate(sensorManagerTask, "sensorManagerTask", 3800, NULL, 1, &sensorManager);
 	xTaskCreate(csvFileManagerTask, "csvFileManagerTask", 4000, NULL, 0, &csvFileManager);
-	xTaskCreate(jsonFileManagerTask, "jsonFileManagerTask", 21000, NULL, 0, &jsonFileManager);
 }
 
 void loop() {

@@ -3,7 +3,8 @@
 # Partition offset must be a multiple of 4kb
 # Partitions of type app have to be placed at offsets aligned to 64K
 # Name,   Type, SubType, Offset,  Size, Flags
-nvs,      data, nvs,     36K,     20K,
-factory,  app,  factory, 64K,     1000k,
-spiffs,   data, spiffs,  1064K,    2936K,
+nvs,      data, nvs,     0x9000,  0x5000,
+otadata,  data, ota,     0xe000,  0x2000,
+app0,     app,  ota_0,   0x10000, 0x100000,
+spiffs,   data, spiffs,  0x110000,0x240000,
 coredump, data, coredump,0x3F0000,0x10000,
