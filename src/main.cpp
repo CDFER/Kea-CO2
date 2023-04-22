@@ -245,8 +245,9 @@ bool updateBrightness(LTR303& lightSensor, uint8_t& brightness, uint8_t& targetB
 
 // Updates the position of the lighting effect on the LED strip based on a target position.
 void updatePosition(uint16_t& position, const uint16_t& targetPosition) {
-	if (targetPosition < LIGHTBAR_MIN_POSITION){
-		position = LIGHTBAR_MIN_POSITION;
+	if (position == LIGHTBAR_MIN_POSITION) {
+		// position = LIGHTBAR_MIN_POSITION;
+		return;
 	} else if (targetPosition < LIGHTBAR_MAX_POSITION) {  // if position is in valid range
 		if (position > targetPosition) {
 			position--;
