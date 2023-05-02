@@ -619,6 +619,8 @@ bool connectToOpenWifi() {
 		return true;
 	}
 
+	WiFi.enableSTA(false);
+
 	return false;
 }
 
