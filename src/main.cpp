@@ -110,7 +110,7 @@ const char* password = "";								// Password of the WiFi access point (leave bl
 // as well as the IP and URL for the web server
 char CSVLogFilename[] = "/Kea-CO2-Data.csv";			// Location of the CSV file
 #define MAX_CSV_SIZE_BYTES 2000000						// Maximum size of the CSV file (2 MB)
-#define CSV_LINE_MAX_CHARS 32							// Maximum size of the csvLine character buffer
+#define CSV_LINE_MAX_CHARS 64							// Maximum size of the csvLine character buffer
 const IPAddress localIP(4, 3, 2, 1);					// IP address of the web server (Samsung requires the IP to be in public space)
 const IPAddress gatewayIP(4, 3, 2, 1);					// IP address of the network (should be the same as the local IP in most cases)
 const String localIPURL = "http://4.3.2.1/index.html";	// URL to the web server (same as the local IP, but as a string with http and the landing page subdomain)
@@ -245,9 +245,8 @@ bool updateBrightness(LTR303& lightSensor, uint8_t& brightness, uint8_t& targetB
 
 // Updates the position of the lighting effect on the LED strip based on a target position.
 void updatePosition(uint16_t& position, const uint16_t& targetPosition) {
-	if (position == LIGHTBAR_MIN_POSITION) {
-		// position = LIGHTBAR_MIN_POSITION;
-		return;
+	if (targetPosition < LIGHTBAR_MIN_POSITION) {
+		position = LIGHTBAR_MIN_POSITION;
 	} else if (targetPosition < LIGHTBAR_MAX_POSITION) {  // if position is in valid range
 		if (position > targetPosition) {
 			position--;
@@ -278,7 +277,7 @@ void updateLightBar(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod>& light
 	lightBar.Show();
 }
 
-// Handles the target position notification and sets the target position.
+// Handles the target position notification and sets the local target position.
 void handleTargetPositionNotification(uint16_t& targetPosition, uint32_t rawNotification, lightBarModes& lightBarMode) {
 	uint16_t rawPosition = high16Bits(rawNotification);
 	if (rawPosition != 0) {
@@ -307,7 +306,7 @@ void handleTargetPositionNotification(uint16_t& targetPosition, uint32_t rawNoti
  */
 void lightBarTask(void* parameter) {
 	// Create the the lightbar object
-	NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> lightBar(PIXEL_COUNT+1, PIXEL_DATA_PIN);  // uses i2s silicon remapped to any pin to drive led data
+	NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> lightBar(PIXEL_COUNT + 1, PIXEL_DATA_PIN);  // uses i2s silicon remapped to any pin to drive led data
 
 	initializeLightBar(lightBar);
 
@@ -432,18 +431,28 @@ void lightBarTask(void* parameter) {
 	}
 }
 
+// Callback function (get's called when time adjusts via NTP)
+void onTimeAvailable(struct timeval* t) {
+	vTaskResume(lightBar);
+	xTaskNotify(lightBar, greenPulse, eSetValueWithOverwrite);
+	WiFi.disconnect();
+
+	time_t epoch;
+	struct tm gmt;
+	time(&epoch);
+	gmtime_r(&epoch, &gmt);
+	Serial.println(&gmt, "\n\rGMT Time Set: %A, %B %d %Y %H:%M:%S\n\r");
+}
+
 void initializeNTPClient() {
 	// Define the NTP servers to be used for time synchronization
 	const char* ntpServer1 = "pool.ntp.org";
 	const char* ntpServer2 = "time.nist.gov";
 	const char* ntpServer3 = "time.google.com";
 
-	// Set the SNTP operating mode to polling, and configure the NTP servers
-	sntp_setoperatingmode(SNTP_OPMODE_POLL);
-	sntp_setservername(0, ntpServer1);
-	sntp_setservername(1, ntpServer2);
-	sntp_setservername(2, ntpServer3);
-	sntp_init();
+	sntp_set_time_sync_notification_cb(onTimeAvailable);
+
+	configTzTime(time_zone, ntpServer1, ntpServer2, ntpServer3);
 }
 
 void setUpDNSServer(DNSServer& dnsServer, const IPAddress& localIP) {
@@ -581,49 +590,6 @@ void setUpWebserver(AsyncWebServer& server, const IPAddress& localIP) {
 		});
 }
 
-// Connect to the first available open WiFi network with a strong signal
-bool connectToOpenWifi() {
-	const int MIN_SIGNAL_STRENGTH = -60;
-
-	// Scan for available networks
-	int16_t numNetworks = WiFi.scanNetworks();
-
-	// If no networks are found, log a message and return
-	if (numNetworks == 0) {
-		ESP_LOGI("", "No networks found.");
-		return false;
-	}
-
-	// Loop through all available networks
-	for (int i = 0; i < numNetworks; ++i) {
-		// Check if the network is open and has a strong signal
-		bool isOpen = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN);
-		bool hasStrongSignal = (WiFi.RSSI(i) > MIN_SIGNAL_STRENGTH);  // RSSI is wifi signal strength
-
-		// If the network is not open or doesn't have a strong signal, skip it
-		if (!isOpen || !hasStrongSignal) {
-			continue;
-		}
-
-		// Check if the SSID contains "Kea"
-		String ssid = WiFi.SSID(i);
-		if (ssid.indexOf("Kea") != -1) {
-			continue;
-		}
-
-		// If the network is open, has a strong signal, and doesn't contain "Kea" in the SSID, connect to it
-		ESP_LOGI("", "Connecting to %s...", ssid.c_str());
-		WiFi.setAutoReconnect(false);
-		WiFi.begin(ssid.c_str());
-
-		return true;
-	}
-
-	WiFi.enableSTA(false);
-
-	return false;
-}
-
 /**
  * @brief Runs the webserver, all WiFi functions, and sets up NTP servers.
  *
@@ -660,7 +626,8 @@ void webserverTask(void* parameter) {
 	setUpWebserver(server, localIP);
 	server.begin();
 
-	connectToOpenWifi();
+	WiFi.begin("time", "12345678");
+	WiFi.setAutoReconnect(false);
 
 	WiFi.setTxPower(WIFI_POWER_2dBm);
 	ESP_LOGV("WiFi Tx Power Set To:", "%i", (WiFi.getTxPower()));
@@ -682,7 +649,7 @@ void webserverTask(void* parameter) {
  * @param[in] filename The name of the CSV file.
  * @return True if the CSV was successfully initialized, false otherwise.
  */
-bool initializeCsvFile(const char* filename, const char* csvHeader) {
+bool initializeCsvFile(const char* filename, char* csvHeader) {
 	// Attempt to open the CSV file (create if it doesn't exist)
 	File file = LittleFS.open(filename, FILE_APPEND, true);
 	if (!file) {
@@ -719,7 +686,11 @@ bool initializeCsvFile(const char* filename, const char* csvHeader) {
  * @param[in] parameter The task parameter (unused).
  */
 void csvFileManagerTask(void* parameter) {
-	const char* csvHeader = "Date, Time, CO2(PPM), Humidity(%RH), Temperature(DegC)\r\n";
+	// Generate a unique header based on the ESP32's MAC address
+	char csvHeader[128];
+	uint8_t mac[6];
+	esp_read_mac(mac, ESP_MAC_WIFI_STA);
+	snprintf(csvHeader, sizeof(csvHeader), "Kea-CO2-%02X (D/M/Y), Time(H:M), CO2(PPM), Humidity(%RH), Temperature(DegC)\r\n", mac[5]);
 	const uint32_t BUFFER_SIZE = 256;
 	const uint32_t FLUSH_THRESHOLD = 128;
 	const uint32_t FLUSH_EVERY_THRESHOLD = 512;
@@ -875,12 +846,16 @@ void sensorManagerTask(void* parameter) {
 	PCF8563_Class rtc;
 	SCD4X co2;
 
-	const char* time_format = "%y/%m/%d,%H:%M";
+	const char* time_format = "%d/%m/%Y,%H:%M";
 
 	Wire.begin(WIRE_SDA_PIN, WIRE_SCL_PIN, 100000);
 
 	rtc.begin(Wire);
-	if(rtc.syncToSystem() == true){
+
+	rtc.disableAlarm();
+	rtc.resetAlarm();
+
+	if (rtc.syncToSystem() == true) {
 		setenv("TZ", time_zone, 1);
 		tzset();
 	} else {
@@ -890,7 +865,7 @@ void sensorManagerTask(void* parameter) {
 	co2.begin(Wire);
 
 #ifdef PRODUCTION_TEST
-	if(co2.isConnected(Wire, &Serial) == false){
+	if (co2.isConnected(Wire, &Serial) == false) {
 		xTaskNotify(lightBar, errorRed, eSetValueWithOverwrite);
 	}
 	co2.setCalibrationMode(false);
@@ -947,12 +922,12 @@ void sensorManagerTask(void* parameter) {
 
 			struct tm timeInfo;
 			localtime_r(&currentEpoch, &timeInfo);
-			char timeStamp[16];
-			strftime(timeStamp, 16, time_format, &timeInfo);
+			char timeStamp[24];
+			strftime(timeStamp, sizeof(timeStamp), time_format, &timeInfo);
 
 			char buf[CSV_LINE_MAX_CHARS];  // temp char array for CSV 40000,99,99
 			// CO2(PPM),Humidity(%RH),Temperature(DegC)"
-			sprintf(buf, "%s,%4.0f,%2.0f,%2.1f", timeStamp, CO2, humidity, temperature);
+			sprintf(buf, "%s,%3.0f,%2.0f,%2.1f", timeStamp, CO2, humidity, temperature);
 			xQueueSend(charsForCSVFileQueue, &buf, 1000 / portTICK_PERIOD_MS);
 			Serial.println(buf);
 
@@ -960,16 +935,8 @@ void sensorManagerTask(void* parameter) {
 		}
 
 		if (timeSet == false && (sntp_getreachability(0) + sntp_getreachability(1) + sntp_getreachability(2) > 0)) {
-			vTaskResume(lightBar);
-			xTaskNotify(lightBar, greenPulse, eSetValueWithOverwrite);
-			timeSet = true;
 			rtc.syncToRtc();
-			WiFi.disconnect();
-
-			struct tm gmt;
-			time(&prevEpoch);
-			gmtime_r(&prevEpoch, &gmt);
-			Serial.println(&gmt, "\n\rGMT Time Set: %A, %B %d %Y %H:%M:%S\n\r");
+			timeSet = true;
 		}
 	}
 }
