@@ -1,0 +1,55 @@
+{
+    "build": {
+        "arduino": {
+            "ldscript": "esp32s2_out.ld"
+        },
+        "core": "esp32",
+        "extra_flags": [
+            "-DARDUINO_ESP32_DEV",
+            "-DWIRE_SDA_PIN=42",
+            "-DWIRE_SCL_PIN=2",
+            "-DWIRE1_SDA_PIN=16",
+            "-DWIRE1_SCL_PIN=15",
+            "-DPIXEL_DATA_PIN=36"
+        ],
+        "f_cpu": "240000000L",
+        "f_flash": "80000000L",
+        "flash_mode": "qio",
+        "hwids": [
+            [
+                "0x239A",
+                "0x80EB"
+            ],
+            [
+                "0x239A",
+                "0x00EB"
+            ],
+            [
+                "0x239A",
+                "0x80EC"
+            ]
+        ],
+        "mcu": "esp32s2",
+        "variant": "esp32s2"
+    },
+    "connectivity": [
+        "wifi"
+    ],
+    "debug": {
+        "openocd_board": "esp32s2.cfg"
+    },
+    "frameworks": [
+        "arduino",
+        "espidf"
+    ],
+    "name": "030-ESP32S2",
+    "upload": {
+        "flash_size": "4MB",
+        "maximum_ram_size": 327680,
+        "maximum_size": 4194304,
+        "require_upload_port": true,
+        "speed": 3000000
+    },
+    "url": "",
+    "vendor": "Kea Studios"
+}
