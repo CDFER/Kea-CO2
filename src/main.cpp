@@ -45,6 +45,14 @@
 #include "sntp.h"
 #include "time.h"
 
+#ifdef OTA
+#include <ArduinoOTA.h>
+#include <ESPTelnet.h>
+const char* ssid = "ssid";
+const char* netpassword = "password";
+ESPTelnet telnet;
+#endif
+
 // -----------------------------------------
 //
 //    Hardware Config
@@ -56,14 +64,14 @@
 #include "scd4x.h"		  // SCD4x (CO2 sensor)
 
 // Define the pins for the I2C communication buses
-#define WIRE_SDA_PIN 21
-#define WIRE_SCL_PIN 22
-#define WIRE1_SDA_PIN 33
-#define WIRE1_SCL_PIN 32
+// #define WIRE_SDA_PIN 21
+// #define WIRE_SCL_PIN 22
+// #define WIRE1_SDA_PIN 33
+// #define WIRE1_SCL_PIN 32
 
 // Define the data pin for the WS2812B LED light bar, the number of pixels,
 // and an offset to adjust the temperature reading
-#define PIXEL_DATA_PIN 16  // GPIO -> LEVEL SHIFT -> Pixel 1 Data In Pin
+// #define PIXEL_DATA_PIN 16  // GPIO -> LEVEL SHIFT -> Pixel 1 Data In Pin
 #define PIXEL_COUNT 11	   // Number of Addressable Pixels to write data to (starts at pixel 1)
 #define TEMP_OFFSET 10.6	   // The enclosure runs a bit hot, so reduce this to get a more accurate ambient temperature
 
@@ -218,7 +226,7 @@ uint16_t mapCO2toPosition(double inputCO2) {
 }
 
 // Initializes the LED strip to black.
-void initializeLightBar(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod>& lightBar) {
+void initializeLightBar(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s0Ws2812xMethod>& lightBar) {
 	lightBar.Begin();
 	lightBar.Show();
 }
@@ -258,7 +266,7 @@ void updatePosition(uint16_t& position, const uint16_t& targetPosition) {
 }
 
 // Updates the lighting effect on the LED strip.
-void updateLightBar(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod>& lightBar, const uint16_t& position, const uint8_t& brightness) {
+void updateLightBar(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s0Ws2812xMethod>& lightBar, const uint16_t& position, const uint8_t& brightness) {
 	uint8_t redGreenMix = position / PIXEL_COUNT;	 // 0 - 255 version of position
 	uint16_t mixingPixel = position / 255;			 // which pixel is the position at
 	uint8_t mixingPixelBrightness = position % 255;	 // what is the local position of the pixel
@@ -306,15 +314,9 @@ void handleTargetPositionNotification(uint16_t& targetPosition, uint32_t rawNoti
  */
 void lightBarTask(void* parameter) {
 	// Create the the lightbar object
-	NeoPixelBus<NeoGrbFeature, NeoEsp32I2s1Ws2812xMethod> lightBar(PIXEL_COUNT + 1, PIXEL_DATA_PIN);  // uses i2s silicon remapped to any pin to drive led data
+	NeoPixelBus<NeoGrbFeature, NeoEsp32I2s0Ws2812xMethod> lightBar(PIXEL_COUNT + 1, PIXEL_DATA_PIN);  // uses i2s silicon remapped to any pin to drive led data
 
-	initializeLightBar(lightBar);
-
-	LTR303 lightSensor;
-	Wire1.begin(WIRE1_SDA_PIN, WIRE1_SCL_PIN, 500000);	// tested to be 380khz irl (400khz per data sheet)
-	lightSensor.begin(GAIN_48X, EXPOSURE_400ms, true, Wire1);
-
-	double lux;	 // The measured illumination level in lux.
+	//double lux;	 // The measured illumination level in lux.
 
 	uint8_t targetBrightness = MAX_BRIGHTNESS;	// The target brightness value for the light bar, ranging from 0 to 255.
 	uint8_t brightness = 255;					// The current brightness value for the light bar, ranging from 0 to 255.
@@ -324,10 +326,20 @@ void lightBarTask(void* parameter) {
 	uint16_t position = 0;								  // The current position value for the light bar, ranging from 0 to LIGHTBAR_MAX_POSITION.
 	lightBarModes lightBarMode = lightBarScale;
 
+	initializeLightBar(lightBar);
+
+	LTR303 lightSensor;
+	Wire1.begin(WIRE1_SDA_PIN, WIRE1_SCL_PIN, 500000);	// tested to be 380khz irl (400khz per data sheet)
+
 #ifdef PRODUCTION_TEST
-	lightSensor.isConnected(Wire1, &Serial);
-	lightBarMode = rgbTest;
+	if (!lightSensor.isConnected(Wire1, &Serial)) {
+		lightBarMode = errorRed;
+	} else {
+		lightBarMode = rgbTest;
+	}
 #endif
+
+	lightSensor.begin(GAIN_48X, EXPOSURE_100ms, true, Wire1);
 
 	while (true) {
 		if (updateBrightness(lightSensor, brightness, targetBrightness) == true) {
@@ -337,7 +349,7 @@ void lightBarTask(void* parameter) {
 		}
 		//Serial.println(brightness);
 
-		for (uint8_t i = 0; i < 20; i++) {	// get light reading every 20 frames
+		for (uint8_t i = 0; i < 4; i++) {	// get light reading every 4 frames
 			if (xTaskNotifyWait(0, 0xFFFF, &rawNotification, 0) == pdTRUE) {
 				handleTargetPositionNotification(targetPosition, rawNotification, lightBarMode);
 			}
@@ -435,7 +447,9 @@ void lightBarTask(void* parameter) {
 void onTimeAvailable(struct timeval* t) {
 	vTaskResume(lightBar);
 	xTaskNotify(lightBar, greenPulse, eSetValueWithOverwrite);
+#ifndef OTA
 	WiFi.disconnect();
+#endif
 
 	time_t epoch;
 	struct tm gmt;
@@ -457,7 +471,7 @@ void initializeNTPClient() {
 
 void setUpDNSServer(DNSServer& dnsServer, const IPAddress& localIP) {
 	// Define the DNS interval in milliseconds between processing DNS requests
-#define DNS_INTERVAL 30
+#define DNS_INTERVAL 10
 
 	// Set the TTL for DNS response and start the DNS server
 	dnsServer.setTTL(3600);
@@ -626,16 +640,73 @@ void webserverTask(void* parameter) {
 	setUpWebserver(server, localIP);
 	server.begin();
 
-	WiFi.begin("time", "12345678");
-	WiFi.setAutoReconnect(false);
+#ifdef OTA
+	WiFi.begin(ssid, netpassword);
 
+	for (size_t i = 0; i < 50 && WiFi.waitForConnectResult() != WL_CONNECTED; i++) {
+		vTaskDelay(100 / portTICK_PERIOD_MS);
+	}
+
+	if (WiFi.waitForConnectResult() != WL_CONNECTED) {
+		Serial.println("Connection Failed! Rebooting...");
+		ESP.restart();
+	}
+
+	telnet.begin(23);
+	ArduinoOTA.setPort(3232);
+
+	ArduinoOTA
+		.onStart([]() {
+
+		String type;
+		if (ArduinoOTA.getCommand() == U_FLASH)
+			type = "sketch";
+		else  // U_SPIFFS
+			type = "filesystem";
+
+		// NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+		Serial.println("Start updating " + type);
+			})
+		.onEnd([]() {
+		Serial.println("\nEnd");
+			})
+		.onProgress([](unsigned int progress, unsigned int total) {
+		Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+			})
+		.onError([](ota_error_t error) {
+		Serial.printf("Error[%u]: ", error);
+		if (error == OTA_AUTH_ERROR)
+			Serial.println("Auth Failed");
+		else if (error == OTA_BEGIN_ERROR)
+			Serial.println("Begin Failed");
+		else if (error == OTA_CONNECT_ERROR)
+			Serial.println("Connect Failed. Firewall Issue ?");
+		else if (error == OTA_RECEIVE_ERROR)
+			Serial.println("Receive Failed");
+		else if (error == OTA_END_ERROR)
+			Serial.println("End Failed");
+			});
+
+	ArduinoOTA.setTimeout(30000);
+	ArduinoOTA.begin();
+#else
+	WiFi.begin("time", "12345678");
+	WiFi.setAutoReconnect(false); //critically needed
 	WiFi.setTxPower(WIFI_POWER_2dBm);
+#endif
+
 	ESP_LOGV("WiFi Tx Power Set To:", "%i", (WiFi.getTxPower()));
 
 	ESP_LOGV("", "Startup completed by %ims", (millis()));
 
 	while (true) {
 		dnsServer.processNextRequest();
+
+#ifdef OTA
+		ArduinoOTA.handle();
+		telnet.loop();
+#endif
+
 		vTaskDelay(DNS_INTERVAL / portTICK_PERIOD_MS);
 	}
 }
@@ -690,7 +761,7 @@ void csvFileManagerTask(void* parameter) {
 	char csvHeader[128];
 	uint8_t mac[6];
 	esp_read_mac(mac, ESP_MAC_WIFI_STA);
-	snprintf(csvHeader, sizeof(csvHeader), "Kea-CO2-%02X (D/M/Y), Time(H:M), CO2(PPM), Humidity(%RH), Temperature(DegC)\r\n", mac[5]);
+	snprintf(csvHeader, sizeof(csvHeader), "Kea-CO2-%02X (D/M/Y), Time(H:M), CO2(PPM), Humidity(\%RH), Temperature(DegC)\r\n", mac[5]);
 	const uint32_t BUFFER_SIZE = 256;
 	const uint32_t FLUSH_THRESHOLD = 128;
 	const uint32_t FLUSH_EVERY_THRESHOLD = 512;
@@ -868,6 +939,7 @@ void sensorManagerTask(void* parameter) {
 	if (co2.isConnected(Wire, &Serial) == false) {
 		xTaskNotify(lightBar, errorRed, eSetValueWithOverwrite);
 	}
+	co2.resetEEPROM();
 	co2.setCalibrationMode(false);
 	co2.saveSettings();
 #endif
