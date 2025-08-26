@@ -8,14 +8,16 @@ Kea CO2 is an ESP32-based device designed to visualize CO2 levels. It offers rea
 ![User interface](/images/ui1.png)
 
 ## Known Limitations with Current Version
-- Fixed 1-minute data recording interval.
-- Fixed 2 MB maximum size data file (~60 days at 1-minute interval).
+
+- Fixed 5-minute data recording interval.
+- Fixed 2 MB maximum size data file (~300 days at 5-minute interval).
 
 ## Getting Started
 
 If you encounter any issues while testing this code on a device, please consider adding them to this repository.
 
 ### Prerequisites
+
 The following libraries are used in Kea CO2:
 
 - espressif32 Arduino Framework
@@ -26,6 +28,7 @@ The following libraries are used in Kea CO2:
 - Apex Charts (JavaScript) (The MIT License)
 
 ### Installation
+
 1. Clone the repository.
 2. Install the required libraries (PlatformIO does this automatically).
 3. Compile and upload the code to the ESP32 device.
@@ -40,6 +43,7 @@ To Sync the Time through Wifi just setup a hotspot with the name time and passwo
 On Power the device will connect to the network and sync the time (Green Pulse if successful).
 
 ### Useful Extensions
+
 - Better C++ Syntax
 - Code Spell Checker
 - Live Server
@@ -47,6 +51,7 @@ On Power the device will connect to the network and sync the time (Green Pulse i
 - PuTTY for Standalone Serial Logger
 
 ### Wiring
+
 ![Schematic](/images/Schematic.png)
 | Name               | Designator    | Footprint | Quantity | Manufacturer Part   |
 |--------------------|---------------|-----------|----------|---------------------|

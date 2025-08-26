@@ -42,7 +42,7 @@
 #include <LittleFS.h>
 
 // NTP and Timezone headers
-#include "sntp.h"
+#include "esp_sntp.h"
 #include "time.h"
 
 #ifdef OTA
@@ -63,15 +63,8 @@ ESPTelnet telnet;
 #include "pcf8563.h"	  // pcf8563 (Backup Clock)
 #include "scd4x.h"		  // SCD4x (CO2 sensor)
 
-// Define the pins for the I2C communication buses
-// #define WIRE_SDA_PIN 21
-// #define WIRE_SCL_PIN 22
-// #define WIRE1_SDA_PIN 33
-// #define WIRE1_SCL_PIN 32
-
 // Define the data pin for the WS2812B LED light bar, the number of pixels,
 // and an offset to adjust the temperature reading
-// #define PIXEL_DATA_PIN 16  // GPIO -> LEVEL SHIFT -> Pixel 1 Data In Pin
 #define PIXEL_COUNT 11	   // Number of Addressable Pixels to write data to (starts at pixel 1)
 #define TEMP_OFFSET 10.6	   // The enclosure runs a bit hot, so reduce this to get a more accurate ambient temperature
 
@@ -111,8 +104,8 @@ enum lightBarModes {
 // as well as the record intervals for the CSV and JSON files
 const char* time_zone = "NZST-12NZDT,M9.5.0,M4.1.0/3";	// Time zone (see https://github.com/nayarsystems/posix_tz_db/blob/master/zones.csv)
 const char* password = "";								// Password of the WiFi access point (leave blank for no password)
-#define CSV_RECORD_INTERVAL_SECONDS 60					// Record interval (in seconds) for the CSV file
-#define JSON_RECORD_INTERVAL_SECONDS 1					// Record interval (in seconds) for the JSON file
+#define CSV_RECORD_INTERVAL_SECONDS 60*5				// Record interval (in seconds) for the CSV file
+#define JSON_RECORD_INTERVAL_SECONDS 5					// Record interval (in seconds) for the JSON file
 
 // Define the filename, maximum size, and location for the CSV log file,
 // as well as the IP and URL for the web server
@@ -235,6 +228,7 @@ void initializeLightBar(NeoPixelBus<NeoGrbFeature, NeoEsp32I2s0Ws2812xMethod>& l
 bool updateBrightness(LTR303& lightSensor, uint8_t& brightness, uint8_t& targetBrightness) {
 	double lux;
 	if (lightSensor.getApproximateLux(lux)) {
+		// Serial.printf("Lux: %.2f\n", lux);
 		if (lux < (BRIGHTNESS_FACTOR * MAX_BRIGHTNESS)) {
 			targetBrightness = (uint8_t)(lux / BRIGHTNESS_FACTOR);
 		} else {
@@ -445,6 +439,7 @@ void lightBarTask(void* parameter) {
 
 // Callback function (get's called when time adjusts via NTP)
 void onTimeAvailable(struct timeval* t) {
+	ESP_LOGI("NTP", "Time available");
 	vTaskResume(lightBar);
 	xTaskNotify(lightBar, greenPulse, eSetValueWithOverwrite);
 #ifndef OTA
@@ -510,13 +505,13 @@ void startSoftAccessPoint(const char* password, const IPAddress& localIP, const 
 	WiFi.softAP(uniqueSSID, password, WIFI_CHANNEL, 0, MAX_CLIENTS);
 
 	// Disable AMPDU RX on the ESP32 WiFi to fix a bug on Android
-	esp_wifi_stop();
-	esp_wifi_deinit();
-	wifi_init_config_t my_config = WIFI_INIT_CONFIG_DEFAULT();
-	my_config.ampdu_rx_enable = false;
-	esp_wifi_init(&my_config);
-	esp_wifi_start();
-	vTaskDelay(pdMS_TO_TICKS(100));  // Add a small delay
+	// esp_wifi_stop();
+	// esp_wifi_deinit();
+	// wifi_init_config_t my_config = WIFI_INIT_CONFIG_DEFAULT();
+	// my_config.ampdu_rx_enable = false;
+	// esp_wifi_init(&my_config);
+	// esp_wifi_start();
+	// vTaskDelay(pdMS_TO_TICKS(100));  // Add a small delay
 
 	// Register an event handler for when a station connects to the soft AP
 	WiFi.onEvent(onClientConnected, WiFiEvent_t::ARDUINO_EVENT_WIFI_AP_STACONNECTED);
@@ -1013,13 +1008,26 @@ void sensorManagerTask(void* parameter) {
 	}
 }
 
+void printMemoryUsage() {
+	// Print the memory usage of the ESP32
+	Serial.printf("\nFree Heap: %i bytes\n", ESP.getFreeHeap());
+	Serial.printf("Total Heap: %i bytes\n", ESP.getHeapSize());
+	Serial.printf("Minimum Free Heap: %i bytes\n", ESP.getMinFreeHeap());
+
+	// Print Free heap and tasks high water mark
+	Serial.printf("%s high water mark: %d bytes\n", pcTaskGetName(NULL), uxTaskGetStackHighWaterMark(NULL));
+	Serial.printf("%s high water mark: %d bytes\n", pcTaskGetName(lightBar), uxTaskGetStackHighWaterMark(lightBar));
+	Serial.printf("%s high water mark: %d bytes\n", pcTaskGetName(csvFileManager), uxTaskGetStackHighWaterMark(csvFileManager));
+	Serial.printf("%s high water mark: %d bytes\n", pcTaskGetName(sensorManager), uxTaskGetStackHighWaterMark(sensorManager));
+	Serial.printf("%s high water mark: %d bytes\n", pcTaskGetName(webserver), uxTaskGetStackHighWaterMark(webserver));
+	Serial.printf("%s high water mark: %d bytes\n\n", pcTaskGetName(jsonFileManager), uxTaskGetStackHighWaterMark(jsonFileManager));
+}
+
 void setup() {
 	// Create a task for controlling the light bar.
 	// Parameters are: task function, name for debugging, stack size, parameters to pass to task function, priority, pointer to task handle.
-	xTaskCreate(lightBarTask, "lightBar", 4200, NULL, 2, &lightBar);
+	xTaskCreate(lightBarTask, "lightBar", 1024 * 2, NULL, 0, &lightBar);
 
-	// Set the transmit buffer size for the Serial object and start it with a baud rate of 115200.
-	Serial.setTxBufferSize(1024);
 	Serial.begin(115200);
 
 	// Wait for the Serial object to become available.
@@ -1045,8 +1053,6 @@ void setup() {
 	jsonDocMutex = xSemaphoreCreateMutex();
 
 	// Parameters are: task function, name for debugging, stack size, parameters to pass to task function, priority, pointer to task handle.
-	xTaskCreate(sensorManagerTask, "sensorManagerTask", 3800, NULL, 1, &sensorManager);
-	xTaskCreate(jsonFileManagerTask, "jsonFileManagerTask", 21000, NULL, 0, &jsonFileManager);
 
 	// Initialize LittleFS (ESP32 Storage) and format it if it fails to mount.
 	if (LittleFS.begin(true) == false) {
@@ -1064,8 +1070,14 @@ void setup() {
 	}
 
 	// Parameters are: task function, name for debugging, stack size, parameters to pass to task function, priority, pointer to task handle.
-	xTaskCreate(webserverTask, "webserverTask", 17060, NULL, 1, &webserver);
-	xTaskCreate(csvFileManagerTask, "csvFileManagerTask", 4000, NULL, 0, &csvFileManager);
+	xTaskCreate(webserverTask, "webserverTask", 1024 * 8, NULL, 0, &webserver);
+	xTaskCreate(csvFileManagerTask, "csvFileManagerTask", 1024 * 3, NULL, 0, &csvFileManager);
+	xTaskCreate(jsonFileManagerTask, "jsonFileManagerTask", 1024 * 9, NULL, 0, &jsonFileManager);
+#ifdef ESP32S2
+	xTaskCreate(sensorManagerTask, "sensorManagerTask", 1024 * 2, NULL, 0, &sensorManager);
+#else
+	xTaskCreate(sensorManagerTask, "sensorManagerTask", 1024 * 3, NULL, 0, &sensorManager);
+#endif
 }
 
 void loop() {

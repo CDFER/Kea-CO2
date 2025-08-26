@@ -10,7 +10,8 @@
             "-DWIRE_SCL_PIN=2",
             "-DWIRE1_SDA_PIN=16",
             "-DWIRE1_SCL_PIN=15",
-            "-DPIXEL_DATA_PIN=36"
+            "-DPIXEL_DATA_PIN=36",
+            "-DESP32S2=1"
         ],
         "f_cpu": "240000000L",
         "f_flash": "80000000L",
